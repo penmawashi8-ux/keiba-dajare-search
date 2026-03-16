@@ -722,7 +722,7 @@ async function fetchRaceList(dateStr) {
 }
 
 async function fetchRaceDetail(raceId) {
-  // Try SP (mobile) version first — lighter page with known-working HTML structure
+  // Try SP (mobile) first — lighter page, known-working tr.HorseList structure
   const urls = [
     `https://race.sp.netkeiba.com/?pid=shutuba&race_id=${raceId}`,
     `https://race.netkeiba.com/race/shutuba.html?race_id=${raceId}`,
