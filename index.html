@@ -762,10 +762,10 @@ async function fetchRaceList(dateStr) {
 }
 
 async function fetchRaceDetail(raceId) {
-  // Desktop page parses correctly; SP page returns 0頭 → try desktop first
+  // Try SP (mobile) first — lighter page, known-working tr.HorseList structure
   const urls = [
-    `https://race.netkeiba.com/race/shutuba.html?race_id=${raceId}`,
     `https://race.sp.netkeiba.com/?pid=shutuba&race_id=${raceId}`,
+    `https://race.netkeiba.com/race/shutuba.html?race_id=${raceId}`,
   ];
   for (const url of urls) {
     try {
@@ -891,7 +891,8 @@ function parseShutuba(html, raceId) {
       const wakuEl   = row.querySelector('.Waku, .waku, [class*="Waku"]');
       const umaEl    = row.querySelector('.Umaban, .umaban, [class*="Umaban"]');
       const nameEl   = row.querySelector('.HorseName a, .horse_name a, [class*="HorseName"] a, td:nth-child(4) a, td:nth-child(3) a');
-      const jockeyEl = row.querySelector('.Jockey a, .jockey a, [class*="Jockey"] a, td:nth-child(7) a, td:nth-child(6) a');
+      const jockeyEl = row.querySelector('a[href*="/jockey/"]') ||
+                       row.querySelector('.Jockey a, .jockey a, [class*="Jockey"] a, td:nth-child(7) a, td:nth-child(6) a');
       const waku   = parseInt((wakuEl || cells[0])?.textContent?.trim()) || 0;
       const uma    = parseInt((umaEl  || cells[1])?.textContent?.trim()) || 0;
       const name   = nameEl?.textContent?.trim() || cells[3]?.textContent?.trim() || '';
