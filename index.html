@@ -456,19 +456,25 @@ function normalize(str) {
 // ==============================
 // MATCHING LOGIC
 // ==============================
+// Single-char kanji numerals that are meaningful (e.g. 二 in 丹内祐二)
+const KANJI_NUMERALS = new Set(['一','二','三','四','五','六','七','八','九','十']);
+
 function getMatches(name, num, type) {
   if (!num || !ASSOCIATIONS[num]) return [];
   const assoc = ASSOCIATIONS[num];
   const normName = normalize(name);
   const results = [];
+  // Colors only apply to 枠番 (frame number), not 馬番 (horse number)
+  const colorKws = type === '枠番' ? assoc.colors.map(kw => ({ kw, cat: 'colors', stars: 1 })) : [];
   const allKws = [
     ...assoc.readings.map(kw => ({ kw, cat: 'readings', stars: normName.startsWith(normalize(kw)) ? 3 : 2 })),
-    ...assoc.colors.map(kw => ({ kw, cat: 'colors', stars: 1 })),
+    ...colorKws,
     ...assoc.misc.map(kw => ({ kw, cat: 'misc', stars: 1 })),
   ];
   for (const { kw, cat, stars } of allKws) {
     const normKw = normalize(kw);
-    if (normKw.length < 2) continue; // skip single chars
+    // Skip single chars unless it's a kanji numeral (e.g. 二 in 丹内祐二)
+    if (normKw.length < 2 && !KANJI_NUMERALS.has(kw)) continue;
     if (normName.includes(normKw)) {
       results.push({ kw, cat, stars, type, num });
     }
@@ -590,23 +596,24 @@ selectTab(0); // default: Saturday
 // ==============================
 const MEM_CACHE = {};
 
-// CORS proxy list — tried in order, first success wins
+// CORS proxy list — tried in order, first success wins.
+// api.allorigins.win is placed first as it's the only one that works for netkeiba.
 const CORS_PROXIES = [
-  url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
   url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+  url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
   url => `https://thingproxy.freeboard.io/fetch/${url}`,
 ];
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-async function fetchHtml(url) {
+async function fetchHtml(url, attempt = 1) {
   if (MEM_CACHE[url]) return MEM_CACHE[url];
   let lastErr;
   for (const proxyFn of CORS_PROXIES) {
     try {
       const proxyUrl = proxyFn(url);
       const res = await fetch(proxyUrl, {
-        signal: AbortSignal.timeout(14000),
+        signal: AbortSignal.timeout(20000),
         headers: { 'Accept': 'text/html,*/*', 'Accept-Language': 'ja,en' }
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -618,6 +625,11 @@ async function fetchHtml(url) {
       lastErr = e;
       console.warn('Proxy failed:', proxyFn(url), e.message);
     }
+  }
+  // Retry once more for allorigins (it's rate-limited, brief pause helps)
+  if (attempt < 2) {
+    await sleep(2000 * attempt);
+    return fetchHtml(url, attempt + 1);
   }
   throw lastErr || new Error('All proxies failed');
 }
@@ -916,6 +928,8 @@ async function fetchAndParse(dateStr) {
   const limited = raceList.slice(0, 36);
   setStatus(`<div class="spinner"></div> 出走表取得中 (0/${limited.length})...`);
   const races = [];
+  const failed = [];
+
   for (let i = 0; i < limited.length; i++) {
     const { raceId } = limited[i];
     try {
@@ -923,10 +937,31 @@ async function fetchAndParse(dateStr) {
       if (race.horses.length > 0) races.push(race);
       setStatus(`<div class="spinner"></div> 出走表取得中 (${i+1}/${limited.length}) — ${race.venueName} ${race.raceName}`);
     } catch(e) {
-      console.warn('Race parse failed:', raceId, e.message);
+      console.warn('Race fetch failed:', raceId, e.message);
+      failed.push(raceId);
     }
-    if (i < limited.length - 1) await sleep(400);
+    if (i < limited.length - 1) await sleep(500);
   }
+
+  // Retry failed races once with longer pause (proxy rate limiting)
+  if (failed.length > 0) {
+    setStatus(`<div class="spinner"></div> ${failed.length}件リトライ中... (少々お待ちください)`);
+    await sleep(3000);
+    for (let i = 0; i < failed.length; i++) {
+      const raceId = failed[i];
+      try {
+        // Clear cache so we actually retry
+        delete MEM_CACHE[`https://race.netkeiba.com/race/shutuba.html?race_id=${raceId}`];
+        const race = await fetchRaceDetail(raceId);
+        if (race.horses.length > 0) races.push(race);
+        setStatus(`<div class="spinner"></div> リトライ (${i+1}/${failed.length}) — ${race.venueName} ${race.raceName}`);
+      } catch(e) {
+        console.warn('Retry failed:', raceId, e.message);
+      }
+      if (i < failed.length - 1) await sleep(800);
+    }
+  }
+
   if (!races.length) throw new Error('出走馬データを取得できませんでした（JS動的ページの可能性）');
   return groupByVenue(races);
 }
