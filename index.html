@@ -607,11 +607,14 @@ selectTab(0); // default: Saturday
 // DATA FETCHING
 // ==============================
 const MEM_CACHE = {};
+// Track consecutive failures per proxy host; skip after SKIP_AFTER failures
+const PROXY_FAIL_COUNT = {};
+const PROXY_SKIP_AFTER = 3;
 
 // CORS proxy list — tried in order, first success wins
 const CORS_PROXIES = [
-  url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
   url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+  url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
   url => `https://thingproxy.freeboard.io/fetch/${url}`,
 ];
 
@@ -629,10 +632,14 @@ async function fetchHtml(url) {
   for (const proxyFn of CORS_PROXIES) {
     const proxyUrl = proxyFn(url);
     const host = new URL(proxyUrl).hostname;
+    if ((PROXY_FAIL_COUNT[host] || 0) >= PROXY_SKIP_AFTER) {
+      dbg(`SKIP ${host} (${PROXY_FAIL_COUNT[host]} fails)`);
+      continue;
+    }
     try {
       dbg(`TRY ${host} → ${url.slice(8, 60)}`);
       const res = await fetch(proxyUrl, {
-        signal: AbortSignal.timeout(14000),
+        signal: AbortSignal.timeout(12000),
         headers: { 'Accept': 'text/html,*/*', 'Accept-Language': 'ja,en;q=0.8' }
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -646,11 +653,13 @@ async function fetchHtml(url) {
         text = await res.text();
       }
       if (text.length < 100) throw new Error(`too short: ${text.length}B`);
+      PROXY_FAIL_COUNT[host] = 0; // reset on success
       dbg(`OK ${host}: ${text.length}B`);
       MEM_CACHE[url] = text;
       return text;
     } catch(e) {
-      dbg(`FAIL ${host}: ${e.message}`);
+      PROXY_FAIL_COUNT[host] = (PROXY_FAIL_COUNT[host] || 0) + 1;
+      dbg(`FAIL ${host}(${PROXY_FAIL_COUNT[host]}): ${e.message}`);
       lastErr = e;
     }
   }
@@ -709,21 +718,17 @@ async function fetchRaceList(dateStr) {
 }
 
 async function fetchRaceDetail(raceId) {
-  const urls = [
-    `https://race.sp.netkeiba.com/?pid=shutuba&race_id=${raceId}`,
-    `https://race.netkeiba.com/race/shutuba.html?race_id=${raceId}`,
-  ];
-  for (const url of urls) {
-    try {
-      const html = await fetchHtml(url);
-      const result = parseShutuba(html, raceId);
-      if (result.horses.length > 0) { dbg(`Horses found: ${result.horses.length} (${url.slice(8,40)})`); return result; }
-      dbg(`No horses from ${url.slice(8,40)}`);
-    } catch(e) {
-      dbg(`Shutuba failed (${url.slice(8,40)}): ${e.message}`);
-    }
+  // Only use race.netkeiba.com — sp.netkeiba.com shutuba parsing fails reliably
+  const url = `https://race.netkeiba.com/race/shutuba.html?race_id=${raceId}`;
+  try {
+    const html = await fetchHtml(url);
+    const result = parseShutuba(html, raceId);
+    dbg(`Horses: ${result.horses.length} (${raceId})`);
+    return result;
+  } catch(e) {
+    dbg(`Shutuba fail ${raceId}: ${e.message}`);
+    return parseShutuba('', raceId);
   }
-  return parseShutuba('', raceId); // empty fallback
 }
 
 // ── Manual URL loading ──────────────────────────────────────────
@@ -993,17 +998,15 @@ async function fetchAndParse(dateStr) {
   // Limit to 36 races (3 venues × 12R) to keep response time reasonable
   const limited = raceList.slice(0, 36);
   setStatus(`<div class="spinner"></div> 出走表取得中 (0/${limited.length})...`);
+  // Process in batches of 3 (controlled concurrency to avoid proxy rate limits)
+  const BATCH = 3;
   const races = [];
-  for (let i = 0; i < limited.length; i++) {
-    const { raceId } = limited[i];
-    try {
-      const race = await fetchRaceDetail(raceId);
-      if (race.horses.length > 0) races.push(race);
-      setStatus(`<div class="spinner"></div> 出走表取得中 (${i+1}/${limited.length}) — ${race.venueName} ${race.raceName}`);
-    } catch(e) {
-      console.warn('Race parse failed:', raceId, e.message);
-    }
-    if (i < limited.length - 1) await sleep(400);
+  for (let i = 0; i < limited.length; i += BATCH) {
+    const batch = limited.slice(i, i + BATCH);
+    const results = await Promise.allSettled(batch.map(({ raceId }) => fetchRaceDetail(raceId)));
+    results.forEach(r => { if (r.status === 'fulfilled' && r.value.horses.length > 0) races.push(r.value); });
+    setStatus(`<div class="spinner"></div> 出走表取得中 (${Math.min(i+BATCH, limited.length)}/${limited.length})...`);
+    if (i + BATCH < limited.length) await sleep(300);
   }
   if (!races.length) throw new Error('出走馬データを取得できませんでした（JS動的ページの可能性）');
   return groupByVenue(races);
