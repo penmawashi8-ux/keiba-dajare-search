@@ -607,9 +607,6 @@ selectTab(0); // default: Saturday
 // DATA FETCHING
 // ==============================
 const MEM_CACHE = {};
-// Track consecutive failures per proxy host; skip after SKIP_AFTER failures
-const PROXY_FAIL_COUNT = {};
-const PROXY_SKIP_AFTER = 3;
 
 // CORS proxy list — tried in order, first success wins
 const CORS_PROXIES = [
@@ -632,10 +629,6 @@ async function fetchHtml(url) {
   for (const proxyFn of CORS_PROXIES) {
     const proxyUrl = proxyFn(url);
     const host = new URL(proxyUrl).hostname;
-    if ((PROXY_FAIL_COUNT[host] || 0) >= PROXY_SKIP_AFTER) {
-      dbg(`SKIP ${host} (${PROXY_FAIL_COUNT[host]} fails)`);
-      continue;
-    }
     try {
       dbg(`TRY ${host} → ${url.slice(8, 60)}`);
       const res = await fetch(proxyUrl, {
@@ -657,14 +650,11 @@ async function fetchHtml(url) {
         charset = 'utf-8';
       }
       const text = new TextDecoder(charset).decode(buf);
-      dbg(`charset: ${charset}, ${text.length}B`);
-      PROXY_FAIL_COUNT[host] = 0; // reset on success
-      dbg(`OK ${host}: ${text.length}B`);
+      dbg(`OK ${host}: ${charset} ${text.length}B`);
       MEM_CACHE[url] = text;
       return text;
     } catch(e) {
-      PROXY_FAIL_COUNT[host] = (PROXY_FAIL_COUNT[host] || 0) + 1;
-      dbg(`FAIL ${host}(${PROXY_FAIL_COUNT[host]}): ${e.message}`);
+      dbg(`FAIL ${host}: ${e.message}`);
       lastErr = e;
     }
   }
@@ -811,6 +801,12 @@ function parseShutuba(html, raceId) {
 
   // ── Strategy A1: sp.netkeiba.com mobile — tr.HorseList rows ────
   const horses = [];
+  const _tables = doc.querySelectorAll('table').length;
+  const _trs    = doc.querySelectorAll('tr').length;
+  const _spRows = doc.querySelectorAll('tr.HorseList').length;
+  // Log first 3 tr class names for diagnosis when parsing is failing
+  const _trClasses = [...doc.querySelectorAll('tr')].slice(0,3).map(r=>r.className||'(no class)').join(' | ');
+  if (html.length > 1000) dbg(`DOM: tables=${_tables} trs=${_trs} tr.HorseList=${_spRows} | ${_trClasses}`);
   const spRows = [...doc.querySelectorAll('tr.HorseList')];
   if (spRows.length > 0) {
     for (const row of spRows) {
@@ -1037,15 +1033,15 @@ async function fetchAndParse(dateStr) {
   // Limit to 36 races (3 venues × 12R) to keep response time reasonable
   const limited = raceList.slice(0, 36);
   setStatus(`<div class="spinner"></div> 出走表取得中 (0/${limited.length})...`);
-  // Process in batches of 3 (controlled concurrency to avoid proxy rate limits)
-  const BATCH = 3;
+  // Sequential with delay — avoid hammering the same proxy with concurrent requests
   const races = [];
-  for (let i = 0; i < limited.length; i += BATCH) {
-    const batch = limited.slice(i, i + BATCH);
-    const results = await Promise.allSettled(batch.map(({ raceId }) => fetchRaceDetail(raceId)));
-    results.forEach(r => { if (r.status === 'fulfilled' && r.value.horses.length > 0) races.push(r.value); });
-    setStatus(`<div class="spinner"></div> 出走表取得中 (${Math.min(i+BATCH, limited.length)}/${limited.length})...`);
-    if (i + BATCH < limited.length) await sleep(300);
+  for (let i = 0; i < limited.length; i++) {
+    const { raceId } = limited[i];
+    const race = await fetchRaceDetail(raceId);
+    if (race.horses.length > 0) races.push(race);
+    setStatus(`<div class="spinner"></div> 出走表取得中 (${i+1}/${limited.length}) — ${race.venueName} ${race.raceName}`);
+    if (races.length > 0 && i === 0) renderResults(groupByVenue(races)); // show first result fast
+    if (i < limited.length - 1) await sleep(500);
   }
   if (!races.length) throw new Error('出走馬データを取得できませんでした（JS動的ページの可能性）');
   return groupByVenue(races);
