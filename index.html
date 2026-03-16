@@ -595,9 +595,15 @@ selectTab(0); // default: Saturday
 // DATA FETCHING
 // ==============================
 const MEM_CACHE = {};
+// Track consecutive failures per proxy host; skip after SKIP_AFTER failures
+const PROXY_FAIL_COUNT = {};
+const PROXY_SKIP_AFTER = 3;
+
+// kaisai.json lives in a separate repo — GitHub raw content has CORS headers so no proxy needed
+const KAISAI_JSON_URL = 'https://raw.githubusercontent.com/penmawashi8-ux/keiba-auto-betting/main/kaisai.json';
 
 // CORS proxy list — tried in order, first success wins.
-// api.allorigins.win is placed first as it's the only one that works for netkeiba.
+// api.allorigins.win is the most reliable for netkeiba.
 const CORS_PROXIES = [
   url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
   url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
@@ -606,45 +612,57 @@ const CORS_PROXIES = [
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-async function fetchHtml(url, attempt = 1) {
-  if (MEM_CACHE[url]) return MEM_CACHE[url];
+function dbg(msg) {
+  console.log(msg);
+}
+
+async function fetchHtml(url) {
+  if (MEM_CACHE[url]) { dbg(`CACHE: ${url.slice(-50)}`); return MEM_CACHE[url]; }
   let lastErr;
   for (const proxyFn of CORS_PROXIES) {
+    const proxyUrl = proxyFn(url);
+    const host = new URL(proxyUrl).hostname;
+    if ((PROXY_FAIL_COUNT[host] || 0) >= PROXY_SKIP_AFTER) {
+      dbg(`SKIP ${host} (${PROXY_FAIL_COUNT[host]} fails)`);
+      continue;
+    }
     try {
-      const proxyUrl = proxyFn(url);
+      dbg(`TRY ${host} → ${url.slice(8, 60)}`);
       const res = await fetch(proxyUrl, {
-        signal: AbortSignal.timeout(20000),
-        headers: { 'Accept': 'text/html,*/*', 'Accept-Language': 'ja,en' }
+        signal: AbortSignal.timeout(18000),
+        headers: { 'Accept': 'text/html,*/*', 'Accept-Language': 'ja,en;q=0.8' }
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const text = await res.text();
-      if (text.length < 200) throw new Error('response too short');
+      // Fetch as bytes, detect charset from <meta charset>
+      const buf = await res.arrayBuffer();
+      const peek = new TextDecoder('latin1').decode(new Uint8Array(buf, 0, 2000));
+      const charsetMatch = peek.match(/charset=["']?\s*([^"'>\s;]+)/i);
+      let charset = (charsetMatch?.[1] || '').toLowerCase().replace(/[-_]/g, '');
+      if (charset.includes('eucjp') || charset.includes('euc')) charset = 'euc-jp';
+      else if (charset.includes('shiftjis') || charset.includes('sjis') || charset.includes('windows31j') || charset === 'ms932') charset = 'shift-jis';
+      else charset = 'utf-8';
+      const text = new TextDecoder(charset).decode(buf);
+      dbg(`OK ${host}: ${charset} ${text.length}B`);
+      PROXY_FAIL_COUNT[host] = 0;
       MEM_CACHE[url] = text;
       return text;
     } catch(e) {
+      PROXY_FAIL_COUNT[host] = (PROXY_FAIL_COUNT[host] || 0) + 1;
+      dbg(`FAIL ${host}: ${e.message}`);
       lastErr = e;
-      console.warn('Proxy failed:', proxyFn(url), e.message);
     }
-  }
-  // Retry once more for allorigins (it's rate-limited, brief pause helps)
-  if (attempt < 2) {
-    await sleep(2000 * attempt);
-    return fetchHtml(url, attempt + 1);
   }
   throw lastErr || new Error('All proxies failed');
 }
 
-// Extract all 12-digit netkeiba race_ids from raw HTML text (works even on JS-rendered pages
-// where the data is embedded in <script> tags as JS variables)
+// Extract all 12-digit netkeiba race_ids from raw HTML text
 function extractRaceIds(html, yearPrefix) {
   const seen = new Set();
-  // Matches: race_id=202506050811, race_id:"202506050811", 'race_id','202506050811', etc.
   const re = /race_id[=:"',\s]+(\d{12})/g;
   let m;
   while ((m = re.exec(html)) !== null) {
     if (!yearPrefix || m[1].startsWith(yearPrefix)) seen.add(m[1]);
   }
-  // Also match bare 12-digit numbers in href attributes
   const href = /href=["'][^"']*shutuba[^"']*race_id=(\d{12})/g;
   while ((m = href.exec(html)) !== null) {
     if (!yearPrefix || m[1].startsWith(yearPrefix)) seen.add(m[1]);
@@ -653,41 +671,73 @@ function extractRaceIds(html, yearPrefix) {
 }
 
 async function fetchRaceList(dateStr) {
+  // ── Primary: kaisai.json from GitHub (no CORS proxy needed) ──────
+  try {
+    setStatus(`<div class="spinner"></div> レース一覧取得中…`);
+    const res = await fetch(KAISAI_JSON_URL, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) throw new Error(`kaisai.json HTTP ${res.status}`);
+    const json = await res.json();
+    const entry = json[dateStr];
+    if (!entry || !Object.keys(entry).length) throw new Error(`${dateStr}のデータなし`);
+    const ids = [];
+    for (const info of Object.values(entry)) {
+      const base = info.sample_race_id.slice(0, 10);
+      for (let r = 1; r <= 12; r++) ids.push(base + String(r).padStart(2, '0'));
+    }
+    dbg(`kaisai.json: ${ids.length} IDs for ${dateStr}`);
+    return ids.map(raceId => ({ raceId }));
+  } catch(e) {
+    dbg(`kaisai.json failed: ${e.message}`);
+  }
+
+  // ── Fallback: scrape race list page via proxy ──────────────────
   const year = dateStr.slice(0, 4);
-  const url = `https://race.netkeiba.com/top/race_list.html?kaisai_date=${dateStr}`;
-  setStatus(`<div class="spinner"></div> レース一覧取得中 (${dateStr})...`);
-  const html = await fetchHtml(url);
-
-  // 1. Regex scan of the raw HTML/JS — catches IDs embedded in script blocks
-  const ids = extractRaceIds(html, year);
-
-  // 2. Also DOM-parse for any static links
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(html, 'text/html');
-  const seen = new Set(ids);
-  // Research-confirmed selectors for netkeiba race list
-  doc.querySelectorAll(
-    '.RaceList_DataItem a, a[href*="shutuba"], a[href*="race_id"]'
-  ).forEach(a => {
-    const href = a.getAttribute('href') || '';
-    const m = href.match(/race_id=(\d{12})/);
-    if (m && (!year || m[1].startsWith(year))) seen.add(m[1]);
-  });
-  // data-race-id attributes
-  doc.querySelectorAll('[data-race-id]').forEach(el => {
-    const rid = el.getAttribute('data-race-id');
-    if (rid && /^\d{12}$/.test(rid)) seen.add(rid);
-  });
-
-  const raceIds = [...seen].sort();
-  if (raceIds.length === 0) throw new Error(`race_id not found in page (${html.length} bytes)`);
-  return raceIds.map(raceId => ({ raceId }));
+  const listUrls = [
+    `https://race.sp.netkeiba.com/?pid=race_list&kaisai_date=${dateStr}`,
+    `https://race.netkeiba.com/top/race_list.html?kaisai_date=${dateStr}`,
+  ];
+  let lastErr;
+  for (const url of listUrls) {
+    try {
+      const html = await fetchHtml(url);
+      const seen = new Set(extractRaceIds(html, year));
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      doc.querySelectorAll('a[href*="race_id"]').forEach(a => {
+        const m = (a.getAttribute('href') || '').match(/race_id=(\d{12})/);
+        if (m) seen.add(m[1]);
+      });
+      doc.querySelectorAll('[data-race-id]').forEach(el => {
+        const rid = el.getAttribute('data-race-id');
+        if (rid && /^\d{12}$/.test(rid)) seen.add(rid);
+      });
+      const ids = [...seen].sort();
+      dbg(`Race list from ${url.slice(8, 40)}: ${ids.length} IDs`);
+      if (ids.length > 0) return ids.map(raceId => ({ raceId }));
+    } catch(e) {
+      dbg(`Race list failed: ${e.message}`);
+      lastErr = e;
+    }
+  }
+  throw lastErr || new Error('レース一覧の取得に失敗');
 }
 
 async function fetchRaceDetail(raceId) {
-  const url = `https://race.netkeiba.com/race/shutuba.html?race_id=${raceId}`;
-  const html = await fetchHtml(url);
-  return parseShutuba(html, raceId);
+  // Try SP (mobile) version first — lighter page with known-working HTML structure
+  const urls = [
+    `https://race.sp.netkeiba.com/?pid=shutuba&race_id=${raceId}`,
+    `https://race.netkeiba.com/race/shutuba.html?race_id=${raceId}`,
+  ];
+  for (const url of urls) {
+    try {
+      const html = await fetchHtml(url);
+      const result = parseShutuba(html, raceId);
+      if (result.horses.length > 0) { dbg(`OK ${raceId}: ${result.horses.length}頭`); return result; }
+      dbg(`0頭 ${url.slice(8, 45)}`);
+    } catch(e) {
+      dbg(`Fail ${raceId}: ${e.message}`);
+    }
+  }
+  return parseShutuba('', raceId);
 }
 
 function parseShutuba(html, raceId) {
@@ -695,11 +745,9 @@ function parseShutuba(html, raceId) {
   const doc = parser.parseFromString(html, 'text/html');
 
   // Race title — try several known class names
-  const titleEl = doc.querySelector(
-    '.RaceName, .race_name, .RaceData01 span, h1.fntB, h2.fntB'
-  );
+  const titleEl = doc.querySelector('.RaceName, .race_name, .RaceData01 span, h1.fntB, h2.fntB');
   const raceNumEl = doc.querySelector('.RaceNum, .race_num');
-  const raceNum = raceNumEl ? raceNumEl.textContent.trim().replace(/\D/g,'') + 'R' : `${raceId.slice(10,12)}R`;
+  const raceNum = raceNumEl ? raceNumEl.textContent.trim().replace(/\D/g,'') + 'R' : `${parseInt(raceId.slice(10,12),10)}R`;
   let raceName = titleEl ? titleEl.textContent.trim() : raceNum;
   if (raceName && raceNumEl && !raceName.includes('R')) raceName = raceNum + ' ' + raceName;
 
@@ -707,55 +755,68 @@ function parseShutuba(html, raceId) {
   const venueCode = raceId.slice(4, 6);
   const venueName = VENUE_CODES[venueCode] || `会場${venueCode}`;
 
-  // ── Strategy A: DOM table parsing ──────────────────────────────
   const horses = [];
-  const tableSelectors = [
-    '.Shutuba_Table tr',
-    'table.Shutuba tr',
-    '#shutuba_table tr',
-    '.race_table_01 tr',
-    'table tr',          // last resort
-  ];
-  let rows = [];
-  for (const sel of tableSelectors) {
-    rows = [...doc.querySelectorAll(sel)];
-    if (rows.some(r => r.querySelectorAll('td').length >= 4)) break;
+
+  // ── Strategy A1: SP version — tr.HorseList rows ─────────────────
+  // race.sp.netkeiba.com uses tr.HorseList; horse/jockey identified by href pattern
+  const spRows = [...doc.querySelectorAll('tr.HorseList')];
+  if (spRows.length > 0) {
+    for (const row of spRows) {
+      const cells = [...row.querySelectorAll('td')];
+      if (cells.length < 3) continue;
+      const wakuEl   = row.querySelector('[class*="Waku"], td.Waku');
+      const umaEl    = row.querySelector('[class*="Umaban"], td.Umaban');
+      // Horse name: anchor linking to horse modal or horse DB page
+      const nameEl   = row.querySelector('a[href*="rf=shutuba_modal"]') ||
+                       row.querySelector('a[href*="/horse/"]');
+      // Jockey: anchor linking to jockey page — the reliable selector
+      const jockeyEl = row.querySelector('a[href*="/jockey/"]');
+      const waku   = parseInt((wakuEl || cells[0])?.textContent?.trim()) || 0;
+      const uma    = parseInt((umaEl  || cells[1])?.textContent?.trim()) || 0;
+      const name   = nameEl?.textContent?.trim() || '';
+      const jockey = jockeyEl?.textContent?.trim() || '';
+      if (uma >= 1 && uma <= 18 && name.length > 1)
+        horses.push({ waku: waku || wakuFromUma(uma), uma, name: name.replace(/\s+/g,' '), jockey });
+    }
   }
 
-  for (const row of rows) {
-    const cells = [...row.querySelectorAll('td')];
-    if (cells.length < 4) continue;
-
-    // waku: look for .Waku span or class with background color, else col 1
-    const wakuEl = row.querySelector('.Waku, .waku, [class*="Waku"]');
-    const umaEl  = row.querySelector('.Umaban, .umaban, [class*="Umaban"]');
-    // Horse name: look for anchor in .HorseName or nearby
-    const nameEl = row.querySelector(
-      '.HorseName a, .horse_name a, [class*="HorseName"] a, td:nth-child(4) a, td:nth-child(3) a'
-    );
-    // Jockey: look for anchor in .Jockey or nearby
-    const jockeyEl = row.querySelector(
-      '.Jockey a, .jockey a, [class*="Jockey"] a, td:nth-child(7) a, td:nth-child(6) a'
-    );
-
-    const waku   = parseInt((wakuEl || cells[0])?.textContent?.trim()) || 0;
-    const uma    = parseInt((umaEl  || cells[1])?.textContent?.trim()) || 0;
-    const name   = nameEl?.textContent?.trim() || cells[3]?.textContent?.trim() || '';
-    const jockey = jockeyEl?.textContent?.trim() || '';
-
-    if (uma >= 1 && uma <= 18 && name && name.length > 1) {
-      horses.push({ waku: waku || wakuFromUma(uma), uma, name: name.replace(/\s+/g,' '), jockey });
+  // ── Strategy A2: Desktop version table rows ──────────────────────
+  if (horses.length === 0) {
+    const tableSelectors = [
+      '.Shutuba_Table tr', 'table.Shutuba tr', '#shutuba_table tr',
+      '.race_table_01 tr', 'table tr',
+    ];
+    let rows = [];
+    for (const sel of tableSelectors) {
+      rows = [...doc.querySelectorAll(sel)];
+      if (rows.some(r => r.querySelectorAll('td').length >= 4)) break;
+    }
+    for (const row of rows) {
+      const cells = [...row.querySelectorAll('td')];
+      if (cells.length < 4) continue;
+      const wakuEl   = row.querySelector('.Waku, .waku, [class*="Waku"]');
+      const umaEl    = row.querySelector('.Umaban, .umaban, [class*="Umaban"]');
+      // Horse: href-based selector first (most reliable), then class-based
+      const nameEl   = row.querySelector('a[href*="/horse/"]') ||
+                       row.querySelector('.HorseName a, .horse_name a, [class*="HorseName"] a, td:nth-child(4) a, td:nth-child(3) a');
+      // Jockey: href-based selector (class selectors often fail on netkeiba)
+      const jockeyEl = row.querySelector('a[href*="/jockey/"]') ||
+                       row.querySelector('.Jockey a, .jockey a, [class*="Jockey"] a, td:nth-child(7) a, td:nth-child(6) a');
+      const waku   = parseInt((wakuEl || cells[0])?.textContent?.trim()) || 0;
+      const uma    = parseInt((umaEl  || cells[1])?.textContent?.trim()) || 0;
+      const name   = nameEl?.textContent?.trim() || cells[3]?.textContent?.trim() || '';
+      const jockey = jockeyEl?.textContent?.trim() || '';
+      if (uma >= 1 && uma <= 18 && name && name.length > 1)
+        horses.push({ waku: waku || wakuFromUma(uma), uma, name: name.replace(/\s+/g,' '), jockey });
     }
   }
 
   // ── Strategy B: Regex / JSON scan of raw HTML ───────────────────
   if (horses.length === 0) {
-    const extracted = extractHorsesFromScript(html, raceId);
-    horses.push(...extracted);
+    horses.push(...extractHorsesFromScript(html, raceId));
   }
 
   if (!raceName || raceName.length < 2) raceName = `${venueName}${raceNum}`;
-
   return { raceId, raceName, venueName, horses };
 }
 
@@ -924,45 +985,20 @@ async function loadData() {
 async function fetchAndParse(dateStr) {
   const raceList = await fetchRaceList(dateStr);
   if (!raceList.length) throw new Error('race_idが見つかりません。この日はレースなし、または取得不可');
-  // Limit to 36 races (3 venues × 12R) to keep response time reasonable
+  // Limit to 36 races (3 venues × 12R)
   const limited = raceList.slice(0, 36);
   setStatus(`<div class="spinner"></div> 出走表取得中 (0/${limited.length})...`);
+  // Process in batches of 3 (controlled concurrency to avoid proxy rate limits)
+  const BATCH = 3;
   const races = [];
-  const failed = [];
-
-  for (let i = 0; i < limited.length; i++) {
-    const { raceId } = limited[i];
-    try {
-      const race = await fetchRaceDetail(raceId);
-      if (race.horses.length > 0) races.push(race);
-      setStatus(`<div class="spinner"></div> 出走表取得中 (${i+1}/${limited.length}) — ${race.venueName} ${race.raceName}`);
-    } catch(e) {
-      console.warn('Race fetch failed:', raceId, e.message);
-      failed.push(raceId);
-    }
-    if (i < limited.length - 1) await sleep(500);
+  for (let i = 0; i < limited.length; i += BATCH) {
+    const batch = limited.slice(i, i + BATCH);
+    const results = await Promise.allSettled(batch.map(({ raceId }) => fetchRaceDetail(raceId)));
+    results.forEach(r => { if (r.status === 'fulfilled' && r.value.horses.length > 0) races.push(r.value); });
+    setStatus(`<div class="spinner"></div> 出走表取得中 (${Math.min(i+BATCH, limited.length)}/${limited.length})...`);
+    if (i + BATCH < limited.length) await sleep(300);
   }
-
-  // Retry failed races once with longer pause (proxy rate limiting)
-  if (failed.length > 0) {
-    setStatus(`<div class="spinner"></div> ${failed.length}件リトライ中... (少々お待ちください)`);
-    await sleep(3000);
-    for (let i = 0; i < failed.length; i++) {
-      const raceId = failed[i];
-      try {
-        // Clear cache so we actually retry
-        delete MEM_CACHE[`https://race.netkeiba.com/race/shutuba.html?race_id=${raceId}`];
-        const race = await fetchRaceDetail(raceId);
-        if (race.horses.length > 0) races.push(race);
-        setStatus(`<div class="spinner"></div> リトライ (${i+1}/${failed.length}) — ${race.venueName} ${race.raceName}`);
-      } catch(e) {
-        console.warn('Retry failed:', raceId, e.message);
-      }
-      if (i < failed.length - 1) await sleep(800);
-    }
-  }
-
-  if (!races.length) throw new Error('出走馬データを取得できませんでした（JS動的ページの可能性）');
+  if (!races.length) throw new Error('出走馬データを取得できませんでした');
   return groupByVenue(races);
 }
 
