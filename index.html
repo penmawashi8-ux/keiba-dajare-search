@@ -688,20 +688,41 @@ function extractRaceIds(html, yearPrefix) {
   return [...seen].sort();
 }
 
+// kaisai.json is maintained in the user's other repo — raw.githubusercontent.com supports CORS
+// so no proxy is needed. Race IDs are derived as: sample_race_id.slice(0,10) + "01"..."12"
+const KAISAI_JSON_URL = 'https://raw.githubusercontent.com/penmawashi8-ux/keiba-auto-betting/main/kaisai.json';
+
 async function fetchRaceList(dateStr) {
+  // ── Primary: kaisai.json from GitHub (no CORS proxy needed) ──────
+  try {
+    setStatus(`<div class="spinner"></div> レース一覧取得中…`);
+    const res = await fetch(KAISAI_JSON_URL, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) throw new Error(`kaisai.json HTTP ${res.status}`);
+    const json = await res.json();
+    const entry = json[dateStr];
+    if (!entry || !Object.keys(entry).length) throw new Error(`${dateStr}のデータなし`);
+    const ids = [];
+    for (const info of Object.values(entry)) {
+      const base = info.sample_race_id.slice(0, 10);
+      for (let r = 1; r <= 12; r++) ids.push(base + String(r).padStart(2, '0'));
+    }
+    dbg(`kaisai.json: ${ids.length} IDs for ${dateStr}`);
+    return ids.map(raceId => ({ raceId }));
+  } catch(e) {
+    dbg(`kaisai.json failed: ${e.message}`);
+  }
+
+  // ── Fallback: scrape race list page ────────────────────────────
   const year = dateStr.slice(0, 4);
-  // Try mobile (simpler HTML, EUC-JP) first, then desktop
   const listUrls = [
     `https://race.sp.netkeiba.com/?pid=race_list&kaisai_date=${dateStr}`,
     `https://race.netkeiba.com/top/race_list.html?kaisai_date=${dateStr}`,
   ];
   let lastErr;
   for (const url of listUrls) {
-    setStatus(`<div class="spinner"></div> レース一覧取得中…`);
     try {
       const html = await fetchHtml(url);
       const seen = new Set(extractRaceIds(html, year));
-      // DOM parse for any static links
       const doc = new DOMParser().parseFromString(html, 'text/html');
       doc.querySelectorAll('a[href*="race_id"]').forEach(a => {
         const m = (a.getAttribute('href') || '').match(/race_id=(\d{12})/);
@@ -723,17 +744,22 @@ async function fetchRaceList(dateStr) {
 }
 
 async function fetchRaceDetail(raceId) {
-  // Only use race.netkeiba.com — sp.netkeiba.com shutuba parsing fails reliably
-  const url = `https://race.netkeiba.com/race/shutuba.html?race_id=${raceId}`;
-  try {
-    const html = await fetchHtml(url);
-    const result = parseShutuba(html, raceId);
-    dbg(`Horses: ${result.horses.length} (${raceId})`);
-    return result;
-  } catch(e) {
-    dbg(`Shutuba fail ${raceId}: ${e.message}`);
-    return parseShutuba('', raceId);
+  // Try sp.netkeiba.com (mobile) first — lighter page, correct selector now known
+  const urls = [
+    `https://race.sp.netkeiba.com/?pid=shutuba&race_id=${raceId}`,
+    `https://race.netkeiba.com/race/shutuba.html?race_id=${raceId}`,
+  ];
+  for (const url of urls) {
+    try {
+      const html = await fetchHtml(url);
+      const result = parseShutuba(html, raceId);
+      if (result.horses.length > 0) { dbg(`OK ${raceId}: ${result.horses.length}頭`); return result; }
+      dbg(`0頭 ${url.slice(8,45)}`);
+    } catch(e) {
+      dbg(`Fail ${raceId}: ${e.message}`);
+    }
   }
+  return parseShutuba('', raceId);
 }
 
 // ── Manual URL loading ──────────────────────────────────────────
@@ -783,44 +809,52 @@ function parseShutuba(html, raceId) {
   const venueCode = raceId.slice(4, 6);
   const venueName = VENUE_CODES[venueCode] || `会場${venueCode}`;
 
-  // ── Strategy A: DOM table parsing ──────────────────────────────
+  // ── Strategy A1: sp.netkeiba.com mobile — tr.HorseList rows ────
   const horses = [];
-  const tableSelectors = [
-    '.Shutuba_Table tr',
-    'table.Shutuba tr',
-    '#shutuba_table tr',
-    '.race_table_01 tr',
-    'table tr',          // last resort
-  ];
-  let rows = [];
-  for (const sel of tableSelectors) {
-    rows = [...doc.querySelectorAll(sel)];
-    if (rows.some(r => r.querySelectorAll('td').length >= 4)) break;
+  const spRows = [...doc.querySelectorAll('tr.HorseList')];
+  if (spRows.length > 0) {
+    for (const row of spRows) {
+      const cells = [...row.querySelectorAll('td')];
+      if (cells.length < 3) continue;
+      const wakuEl = row.querySelector('[class*="Waku"], td.Waku');
+      const umaEl  = row.querySelector('[class*="Umaban"], td.Umaban');
+      // Horse name from anchor with rf=shutuba_modal (confirmed by fetch_odds.py)
+      const nameEl = row.querySelector('a[href*="rf=shutuba_modal"]') ||
+                     row.querySelector('a[href*="/horse/"]');
+      const jockeyEl = row.querySelector('a[href*="/jockey/"]');
+      const waku   = parseInt((wakuEl || cells[0])?.textContent?.trim()) || 0;
+      const uma    = parseInt((umaEl  || cells[1])?.textContent?.trim()) || 0;
+      const name   = nameEl?.textContent?.trim() || '';
+      const jockey = jockeyEl?.textContent?.trim() || '';
+      if (uma >= 1 && uma <= 18 && name.length > 1)
+        horses.push({ waku: waku || wakuFromUma(uma), uma, name: name.replace(/\s+/g,' '), jockey });
+    }
   }
 
-  for (const row of rows) {
-    const cells = [...row.querySelectorAll('td')];
-    if (cells.length < 4) continue;
-
-    // waku: look for .Waku span or class with background color, else col 1
-    const wakuEl = row.querySelector('.Waku, .waku, [class*="Waku"]');
-    const umaEl  = row.querySelector('.Umaban, .umaban, [class*="Umaban"]');
-    // Horse name: look for anchor in .HorseName or nearby
-    const nameEl = row.querySelector(
-      '.HorseName a, .horse_name a, [class*="HorseName"] a, td:nth-child(4) a, td:nth-child(3) a'
-    );
-    // Jockey: look for anchor in .Jockey or nearby
-    const jockeyEl = row.querySelector(
-      '.Jockey a, .jockey a, [class*="Jockey"] a, td:nth-child(7) a, td:nth-child(6) a'
-    );
-
-    const waku   = parseInt((wakuEl || cells[0])?.textContent?.trim()) || 0;
-    const uma    = parseInt((umaEl  || cells[1])?.textContent?.trim()) || 0;
-    const name   = nameEl?.textContent?.trim() || cells[3]?.textContent?.trim() || '';
-    const jockey = jockeyEl?.textContent?.trim() || '';
-
-    if (uma >= 1 && uma <= 18 && name && name.length > 1) {
-      horses.push({ waku: waku || wakuFromUma(uma), uma, name: name.replace(/\s+/g,' '), jockey });
+  // ── Strategy A2: desktop netkeiba.com table ──────────────────────
+  if (horses.length === 0) {
+    const tableSelectors = [
+      '.Shutuba_Table tr', 'table.Shutuba tr', '#shutuba_table tr',
+      '.race_table_01 tr', 'table tr',
+    ];
+    let rows = [];
+    for (const sel of tableSelectors) {
+      rows = [...doc.querySelectorAll(sel)];
+      if (rows.some(r => r.querySelectorAll('td').length >= 4)) break;
+    }
+    for (const row of rows) {
+      const cells = [...row.querySelectorAll('td')];
+      if (cells.length < 4) continue;
+      const wakuEl   = row.querySelector('.Waku, .waku, [class*="Waku"]');
+      const umaEl    = row.querySelector('.Umaban, .umaban, [class*="Umaban"]');
+      const nameEl   = row.querySelector('.HorseName a, .horse_name a, [class*="HorseName"] a, td:nth-child(4) a, td:nth-child(3) a');
+      const jockeyEl = row.querySelector('.Jockey a, .jockey a, [class*="Jockey"] a, td:nth-child(7) a, td:nth-child(6) a');
+      const waku   = parseInt((wakuEl || cells[0])?.textContent?.trim()) || 0;
+      const uma    = parseInt((umaEl  || cells[1])?.textContent?.trim()) || 0;
+      const name   = nameEl?.textContent?.trim() || cells[3]?.textContent?.trim() || '';
+      const jockey = jockeyEl?.textContent?.trim() || '';
+      if (uma >= 1 && uma <= 18 && name && name.length > 1)
+        horses.push({ waku: waku || wakuFromUma(uma), uma, name: name.replace(/\s+/g,' '), jockey });
     }
   }
 
