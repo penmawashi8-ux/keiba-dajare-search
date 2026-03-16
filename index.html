@@ -643,16 +643,21 @@ async function fetchHtml(url) {
         headers: { 'Accept': 'text/html,*/*', 'Accept-Language': 'ja,en;q=0.8' }
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      // sp.netkeiba.com uses EUC-JP encoding
-      const ct = res.headers.get('content-type') || '';
-      let text;
-      if (url.includes('sp.netkeiba') || ct.includes('euc') || ct.includes('EUC')) {
-        const buf = await res.arrayBuffer();
-        text = new TextDecoder('euc-jp').decode(buf);
+      // Always fetch as bytes, then detect charset from <meta charset> in HTML
+      const buf = await res.arrayBuffer();
+      // Peek at first 2KB as Latin-1 (ASCII-safe) to find charset declaration
+      const peek = new TextDecoder('latin1').decode(new Uint8Array(buf, 0, 2000));
+      const charsetMatch = peek.match(/charset=["']?\s*([^"'>\s;]+)/i);
+      let charset = (charsetMatch?.[1] || '').toLowerCase().replace(/[-_]/g, '');
+      if (charset.includes('eucjp') || charset.includes('eucjis') || charset.includes('euc')) {
+        charset = 'euc-jp';
+      } else if (charset.includes('shiftjis') || charset.includes('sjis') || charset.includes('windows31j') || charset === 'ms932') {
+        charset = 'shift-jis';
       } else {
-        text = await res.text();
+        charset = 'utf-8';
       }
-      if (text.length < 100) throw new Error(`too short: ${text.length}B`);
+      const text = new TextDecoder(charset).decode(buf);
+      dbg(`charset: ${charset}, ${text.length}B`);
       PROXY_FAIL_COUNT[host] = 0; // reset on success
       dbg(`OK ${host}: ${text.length}B`);
       MEM_CACHE[url] = text;
