@@ -487,7 +487,7 @@ function getMatches(name, num, type) {
   ];
   for (const { kw, cat, stars } of allKws) {
     const normKw = normalize(kw);
-    if (normKw.length < 2) continue; // skip single chars
+    if (normKw.length < 2 && normKw.codePointAt(0) < 256) continue; // skip single ASCII chars; allow single kanji/kana (e.g. 二,ニ)
     if (normName.includes(normKw)) {
       results.push({ kw, cat, stars, type, num });
     }
@@ -631,18 +631,23 @@ function dbg(msg) {
   if (el) { el.textContent += msg + '\n'; el.scrollTop = el.scrollHeight; }
 }
 
-// Semaphore: cap concurrent proxy requests to avoid rate-limiting allorigins.win
-function makeSemaphore(max) {
+// Semaphore: cap concurrent proxy requests and add cooldown to prevent allorigins.win rate-limiting
+function makeSemaphore(max, cooldownMs = 0) {
   let active = 0;
   const queue = [];
   return async function run(fn) {
     if (active >= max) await new Promise(r => queue.push(r));
     active++;
     try { return await fn(); }
-    finally { active--; if (queue.length) queue.shift()(); }
+    finally {
+      if (cooldownMs > 0) await sleep(cooldownMs); // minimum gap before next slot release
+      active--;
+      if (queue.length) queue.shift()();
+    }
   };
 }
-const fetchSem = makeSemaphore(2);
+// 2 concurrent, 400ms cooldown → max ~2 req/1.4s to allorigins.win, avoids burst rate limit
+const fetchSem = makeSemaphore(2, 400);
 
 async function fetchHtml(url) {
   if (MEM_CACHE[url]) { dbg(`CACHE: ${url.slice(-50)}`); return MEM_CACHE[url]; }
@@ -654,7 +659,7 @@ async function fetchHtml(url) {
       try {
         dbg(`TRY ${host} → ${url.slice(8, 60)}`);
         const res = await fetch(proxyUrl, {
-          signal: AbortSignal.timeout(8000),
+          signal: AbortSignal.timeout(5000), // fail fast on rate-limited proxy
           headers: { 'Accept': 'text/html,*/*', 'Accept-Language': 'ja,en;q=0.8' }
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -844,19 +849,22 @@ function parseShutuba(html, raceId) {
       const wakuEl = row.querySelector('[class*="Waku"], td.Waku');
       const umaEl  = row.querySelector('[class*="Umaban"], td.Umaban');
       // Try multiple anchor patterns for horse name (SP uses different href than desktop)
+      // SP: a[href*="/horse/"] matches both modal/horse.html (no text) and db.sp.netkeiba.com/horse/ (has name)
+      // Must prefer the db link, otherwise textContent is empty → 0頭
       const nameEl =
+        row.querySelector('a[href*="db.sp.netkeiba.com/horse/"]') ||
         row.querySelector('a[href*="rf=shutuba_modal"]') ||
-        row.querySelector('a[href*="/horse/"]') ||
         row.querySelector('a[href*="horse_id"]') ||
         row.querySelector('a[href*="pid=jt"]') ||
         cells[3]?.querySelector('a') ||
         cells[4]?.querySelector('a') ||
         cells[2]?.querySelector('a');
       const jockeyEl =
+        row.querySelector('a[href*="db.sp.netkeiba.com/jockey/"]') ||
         row.querySelector('a[href*="/jockey/"]') ||
         row.querySelector('a[href*="jockey_id"]') ||
-        cells[6]?.querySelector('a') ||
-        cells[5]?.querySelector('a');
+        cells[3]?.querySelector('a') ||
+        cells[4]?.querySelector('a');
       const waku   = parseInt((wakuEl || cells[0])?.textContent?.trim()) || 0;
       const uma    = parseInt((umaEl  || cells[1])?.textContent?.trim()) || 0;
       const name   = nameEl?.textContent?.trim() || '';
@@ -1076,6 +1084,7 @@ async function fetchAndParse(dateStr) {
   // Results arrive as each finishes; render progressively so user sees data immediately.
   const races = [];
   let completed = 0;
+  const failedIds = [];
   await Promise.all(limited.map(async ({ raceId }) => {
     const race = await fetchRaceDetail(raceId);
     completed++;
@@ -1083,8 +1092,23 @@ async function fetchAndParse(dateStr) {
     if (race.horses.length > 0) {
       races.push(race);
       if (completed <= 6 || completed % 6 === 0) renderResults(groupByVenue(races));
+    } else {
+      failedIds.push(raceId);
     }
   }));
+
+  // Retry failed races after a pause (lets allorigins.win recover from rate limiting)
+  if (failedIds.length > 0) {
+    setStatus(`<div class="spinner"></div> リトライ中 (${failedIds.length}件)...`);
+    dbg(`Retrying ${failedIds.length} failed races after 2s pause`);
+    await sleep(2000);
+    await Promise.all(failedIds.map(async (raceId) => {
+      const race = await fetchRaceDetail(raceId);
+      if (race.horses.length > 0) races.push(race);
+    }));
+    if (races.length > 0) renderResults(groupByVenue(races));
+  }
+
   if (!races.length) throw new Error('出走馬データを取得できませんでした（JS動的ページの可能性）');
   return groupByVenue(races);
 }
