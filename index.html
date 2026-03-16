@@ -804,20 +804,36 @@ function parseShutuba(html, raceId) {
   const _tables = doc.querySelectorAll('table').length;
   const _trs    = doc.querySelectorAll('tr').length;
   const _spRows = doc.querySelectorAll('tr.HorseList').length;
-  // Log first 3 tr class names for diagnosis when parsing is failing
   const _trClasses = [...doc.querySelectorAll('tr')].slice(0,3).map(r=>r.className||'(no class)').join(' | ');
   if (html.length > 1000) dbg(`DOM: tables=${_tables} trs=${_trs} tr.HorseList=${_spRows} | ${_trClasses}`);
   const spRows = [...doc.querySelectorAll('tr.HorseList')];
   if (spRows.length > 0) {
+    // Log the first row's anchors to detect which href pattern sp.netkeiba.com uses
+    const _firstRow = spRows[0];
+    const _anchors = [..._firstRow.querySelectorAll('a')].map(a => a.getAttribute('href')?.slice(0,60) || '').join(' || ');
+    dbg(`row0 anchors: ${_anchors || '(none)'}`);
+    const _cells0 = _firstRow.querySelectorAll('td').length;
+    dbg(`row0 cells=${_cells0}`);
+
     for (const row of spRows) {
       const cells = [...row.querySelectorAll('td')];
-      if (cells.length < 3) continue;
+      if (cells.length < 2) continue;
       const wakuEl = row.querySelector('[class*="Waku"], td.Waku');
       const umaEl  = row.querySelector('[class*="Umaban"], td.Umaban');
-      // Horse name from anchor with rf=shutuba_modal (confirmed by fetch_odds.py)
-      const nameEl = row.querySelector('a[href*="rf=shutuba_modal"]') ||
-                     row.querySelector('a[href*="/horse/"]');
-      const jockeyEl = row.querySelector('a[href*="/jockey/"]');
+      // Try multiple anchor patterns for horse name (SP uses different href than desktop)
+      const nameEl =
+        row.querySelector('a[href*="rf=shutuba_modal"]') ||
+        row.querySelector('a[href*="/horse/"]') ||
+        row.querySelector('a[href*="horse_id"]') ||
+        row.querySelector('a[href*="pid=jt"]') ||
+        cells[3]?.querySelector('a') ||
+        cells[4]?.querySelector('a') ||
+        cells[2]?.querySelector('a');
+      const jockeyEl =
+        row.querySelector('a[href*="/jockey/"]') ||
+        row.querySelector('a[href*="jockey_id"]') ||
+        cells[6]?.querySelector('a') ||
+        cells[5]?.querySelector('a');
       const waku   = parseInt((wakuEl || cells[0])?.textContent?.trim()) || 0;
       const uma    = parseInt((umaEl  || cells[1])?.textContent?.trim()) || 0;
       const name   = nameEl?.textContent?.trim() || '';
