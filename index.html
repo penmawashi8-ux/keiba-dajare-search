@@ -356,11 +356,29 @@
     <label class="filter-chip"><input type="checkbox" id="fUma" checked> 🔢 馬番連想</label>
   </div>
   <div class="search-row">
-    <button id="btnLoad" onclick="loadData()">🔍 データ取得・検索</button>
+    <button id="btnLoad" onclick="loadData()">🔍 自動取得・検索</button>
   </div>
+  <details style="margin-top:10px">
+    <summary style="font-size:13px;color:var(--color-muted);cursor:pointer;padding:4px 0">
+      📋 netkeibaのURLを直接貼り付けて検索（自動取得が失敗する場合）
+    </summary>
+    <div style="margin-top:8px;display:flex;gap:8px">
+      <input type="url" id="manualUrl"
+        placeholder="https://race.netkeiba.com/race/shutuba.html?race_id=..."
+        style="flex:1;height:44px;border:none;border-radius:8px;background:var(--color-card);color:var(--color-text);font-size:13px;padding:0 10px">
+      <button onclick="loadManualUrl()" style="height:44px;padding:0 14px;border:none;border-radius:8px;background:#2060d0;color:#fff;font-size:14px;cursor:pointer;flex-shrink:0">読込</button>
+    </div>
+    <p style="font-size:11px;color:var(--color-muted);margin-top:6px">
+      Safariでnetkeibaの出走表を開き、URLをコピーして貼り付けてください
+    </p>
+  </details>
 </div>
 
 <div class="status-bar" id="statusBar">選択した日付でデータを取得します</div>
+<details id="debugDetails" style="padding:4px 16px;background:rgba(0,0,0,0.3)">
+  <summary style="font-size:11px;color:var(--color-muted);cursor:pointer">🔧 通信ログ（問題が起きたら確認）</summary>
+  <pre id="debugLog" style="font-size:10px;color:#8af;white-space:pre-wrap;margin-top:4px;max-height:120px;overflow-y:auto"></pre>
+</details>
 <div id="results"></div>
 
 <div class="toast" id="toast"></div>
@@ -599,42 +617,58 @@ const CORS_PROXIES = [
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+function dbg(msg) {
+  console.log(msg);
+  const el = document.getElementById('debugLog');
+  if (el) { el.textContent += msg + '\n'; el.scrollTop = el.scrollHeight; }
+}
+
 async function fetchHtml(url) {
-  if (MEM_CACHE[url]) return MEM_CACHE[url];
+  if (MEM_CACHE[url]) { dbg(`CACHE: ${url.slice(-50)}`); return MEM_CACHE[url]; }
   let lastErr;
   for (const proxyFn of CORS_PROXIES) {
+    const proxyUrl = proxyFn(url);
+    const host = new URL(proxyUrl).hostname;
     try {
-      const proxyUrl = proxyFn(url);
+      dbg(`TRY ${host} → ${url.slice(8, 60)}`);
       const res = await fetch(proxyUrl, {
         signal: AbortSignal.timeout(14000),
-        headers: { 'Accept': 'text/html,*/*', 'Accept-Language': 'ja,en' }
+        headers: { 'Accept': 'text/html,*/*', 'Accept-Language': 'ja,en;q=0.8' }
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const text = await res.text();
-      if (text.length < 200) throw new Error('response too short');
+      // sp.netkeiba.com uses EUC-JP encoding
+      const ct = res.headers.get('content-type') || '';
+      let text;
+      if (url.includes('sp.netkeiba') || ct.includes('euc') || ct.includes('EUC')) {
+        const buf = await res.arrayBuffer();
+        text = new TextDecoder('euc-jp').decode(buf);
+      } else {
+        text = await res.text();
+      }
+      if (text.length < 100) throw new Error(`too short: ${text.length}B`);
+      dbg(`OK ${host}: ${text.length}B`);
       MEM_CACHE[url] = text;
       return text;
     } catch(e) {
+      dbg(`FAIL ${host}: ${e.message}`);
       lastErr = e;
-      console.warn('Proxy failed:', proxyFn(url), e.message);
     }
   }
   throw lastErr || new Error('All proxies failed');
 }
 
-// Extract all 12-digit netkeiba race_ids from raw HTML text (works even on JS-rendered pages
-// where the data is embedded in <script> tags as JS variables)
+// Extract all 12-digit netkeiba race_ids from raw HTML text
+// Works even when JS-rendered: scans <script> blocks and href attrs
 function extractRaceIds(html, yearPrefix) {
   const seen = new Set();
-  // Matches: race_id=202506050811, race_id:"202506050811", 'race_id','202506050811', etc.
-  const re = /race_id[=:"',\s]+(\d{12})/g;
+  // race_id=202506050811, race_id:"...", ?pid=shutuba&race_id=...
+  const re = /[?&"',\s=]race_id[=:"',\s]+(\d{12})/g;
   let m;
   while ((m = re.exec(html)) !== null) {
     if (!yearPrefix || m[1].startsWith(yearPrefix)) seen.add(m[1]);
   }
-  // Also match bare 12-digit numbers in href attributes
-  const href = /href=["'][^"']*shutuba[^"']*race_id=(\d{12})/g;
-  while ((m = href.exec(html)) !== null) {
+  const hrefRe = /href="[^"]*race_id=(\d{12})/g;
+  while ((m = hrefRe.exec(html)) !== null) {
     if (!yearPrefix || m[1].startsWith(yearPrefix)) seen.add(m[1]);
   }
   return [...seen].sort();
@@ -642,40 +676,84 @@ function extractRaceIds(html, yearPrefix) {
 
 async function fetchRaceList(dateStr) {
   const year = dateStr.slice(0, 4);
-  const url = `https://race.netkeiba.com/top/race_list.html?kaisai_date=${dateStr}`;
-  setStatus(`<div class="spinner"></div> レース一覧取得中 (${dateStr})...`);
-  const html = await fetchHtml(url);
-
-  // 1. Regex scan of the raw HTML/JS — catches IDs embedded in script blocks
-  const ids = extractRaceIds(html, year);
-
-  // 2. Also DOM-parse for any static links
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(html, 'text/html');
-  const seen = new Set(ids);
-  // Research-confirmed selectors for netkeiba race list
-  doc.querySelectorAll(
-    '.RaceList_DataItem a, a[href*="shutuba"], a[href*="race_id"]'
-  ).forEach(a => {
-    const href = a.getAttribute('href') || '';
-    const m = href.match(/race_id=(\d{12})/);
-    if (m && (!year || m[1].startsWith(year))) seen.add(m[1]);
-  });
-  // data-race-id attributes
-  doc.querySelectorAll('[data-race-id]').forEach(el => {
-    const rid = el.getAttribute('data-race-id');
-    if (rid && /^\d{12}$/.test(rid)) seen.add(rid);
-  });
-
-  const raceIds = [...seen].sort();
-  if (raceIds.length === 0) throw new Error(`race_id not found in page (${html.length} bytes)`);
-  return raceIds.map(raceId => ({ raceId }));
+  // Try mobile (simpler HTML, EUC-JP) first, then desktop
+  const listUrls = [
+    `https://race.sp.netkeiba.com/?pid=race_list&kaisai_date=${dateStr}`,
+    `https://race.netkeiba.com/top/race_list.html?kaisai_date=${dateStr}`,
+  ];
+  let lastErr;
+  for (const url of listUrls) {
+    setStatus(`<div class="spinner"></div> レース一覧取得中…`);
+    try {
+      const html = await fetchHtml(url);
+      const seen = new Set(extractRaceIds(html, year));
+      // DOM parse for any static links
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      doc.querySelectorAll('a[href*="race_id"]').forEach(a => {
+        const m = (a.getAttribute('href') || '').match(/race_id=(\d{12})/);
+        if (m) seen.add(m[1]);
+      });
+      doc.querySelectorAll('[data-race-id]').forEach(el => {
+        const rid = el.getAttribute('data-race-id');
+        if (rid && /^\d{12}$/.test(rid)) seen.add(rid);
+      });
+      const ids = [...seen].sort();
+      dbg(`Race list from ${url.slice(8,40)}: ${ids.length} IDs`);
+      if (ids.length > 0) return ids.map(raceId => ({ raceId }));
+    } catch(e) {
+      dbg(`Race list failed (${url.slice(8,40)}): ${e.message}`);
+      lastErr = e;
+    }
+  }
+  throw lastErr || new Error('レース一覧の取得に失敗（ログを確認）');
 }
 
 async function fetchRaceDetail(raceId) {
-  const url = `https://race.netkeiba.com/race/shutuba.html?race_id=${raceId}`;
-  const html = await fetchHtml(url);
-  return parseShutuba(html, raceId);
+  const urls = [
+    `https://race.sp.netkeiba.com/?pid=shutuba&race_id=${raceId}`,
+    `https://race.netkeiba.com/race/shutuba.html?race_id=${raceId}`,
+  ];
+  for (const url of urls) {
+    try {
+      const html = await fetchHtml(url);
+      const result = parseShutuba(html, raceId);
+      if (result.horses.length > 0) { dbg(`Horses found: ${result.horses.length} (${url.slice(8,40)})`); return result; }
+      dbg(`No horses from ${url.slice(8,40)}`);
+    } catch(e) {
+      dbg(`Shutuba failed (${url.slice(8,40)}): ${e.message}`);
+    }
+  }
+  return parseShutuba('', raceId); // empty fallback
+}
+
+// ── Manual URL loading ──────────────────────────────────────────
+async function loadManualUrl() {
+  const raw = document.getElementById('manualUrl').value.trim();
+  if (!raw) { showToast('URLを入力してください'); return; }
+  // Accept full URL or bare race_id
+  let raceId = raw.match(/race_id=(\d{10,12})/)?.[1] || raw.match(/^(\d{10,12})$/)?.[1];
+  if (!raceId) { showToast('有効なrace_idが見つかりません'); return; }
+  if (raceId.length === 10) raceId = '20' + raceId; // e.g. 2506050811 → 202506050811
+
+  isLoading = true;
+  document.getElementById('btnLoad').disabled = true;
+  document.getElementById('results').innerHTML = '';
+  setStatus(`<div class="spinner"></div> 出走表取得中 (race_id: ${raceId})...`);
+
+  try {
+    const race = await fetchRaceDetail(raceId);
+    if (race.horses.length === 0) throw new Error('出走馬データが取得できませんでした');
+    const venues = groupByVenue([race]);
+    renderResults(venues);
+    setStatus(`✅ ${race.venueName} ${race.raceName} — ${race.horses.length}頭`);
+  } catch(e) {
+    dbg(`Manual load failed: ${e.message}`);
+    showToast(`⚠️ ${e.message}`);
+    setStatus(`⚠️ 取得失敗: ${e.message}`);
+  } finally {
+    isLoading = false;
+    document.getElementById('btnLoad').disabled = false;
+  }
 }
 
 function parseShutuba(html, raceId) {
