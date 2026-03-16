@@ -1,0 +1,1129 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>🏇 競馬ダジャレ検索</title>
+<style>
+  :root {
+    --color-bg: #1a1a2e;
+    --color-surface: #16213e;
+    --color-card: #0f3460;
+    --color-accent: #e94560;
+    --color-gold: #ffd700;
+    --color-text: #eaeaea;
+    --color-muted: #8892a0;
+    --radius: 12px;
+    --waku1: #f0f0f0; --waku1-text: #333;
+    --waku2: #111111; --waku2-text: #fff;
+    --waku3: #e03030; --waku3-text: #fff;
+    --waku4: #2060d0; --waku4-text: #fff;
+    --waku5: #f0c000; --waku5-text: #333;
+    --waku6: #20a040; --waku6-text: #fff;
+    --waku7: #e07020; --waku7-text: #fff;
+    --waku8: #e060a0; --waku8-text: #fff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Noto Sans JP', sans-serif;
+    font-size: 16px;
+    background: var(--color-bg);
+    color: var(--color-text);
+    min-height: 100vh;
+  }
+  /* Header */
+  header {
+    background: linear-gradient(135deg, #0f3460 0%, #e94560 100%);
+    padding: 16px;
+    text-align: center;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+  header h1 { font-size: 22px; font-weight: 800; letter-spacing: 1px; }
+  header p { font-size: 12px; color: rgba(255,255,255,0.8); margin-top: 2px; }
+  /* Controls */
+  .controls {
+    padding: 12px 16px;
+    background: var(--color-surface);
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+  }
+  .date-nav {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .date-nav button {
+    min-height: 44px;
+    padding: 0 14px;
+    border: none;
+    border-radius: 8px;
+    background: var(--color-card);
+    color: var(--color-text);
+    font-size: 15px;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .date-nav button:active { opacity: 0.7; }
+  .date-tabs {
+    display: flex;
+    gap: 6px;
+    flex: 1;
+    min-width: 0;
+  }
+  .date-tab {
+    flex: 1;
+    min-height: 44px;
+    border: 2px solid transparent;
+    border-radius: 8px;
+    background: var(--color-card);
+    color: var(--color-muted);
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    line-height: 1.3;
+  }
+  .date-tab.active { border-color: var(--color-accent); color: var(--color-text); background: #1a3a6e; }
+  .date-tab .day-label { font-size: 11px; color: var(--color-muted); }
+  .date-tab.active .day-label { color: var(--color-accent); }
+  input[type="date"] {
+    width: 100%;
+    height: 44px;
+    border: none;
+    border-radius: 8px;
+    background: var(--color-card);
+    color: var(--color-text);
+    font-size: 15px;
+    padding: 0 12px;
+    margin-bottom: 10px;
+    -webkit-appearance: none;
+  }
+  .filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .filter-chip {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px;
+    border-radius: 20px;
+    background: var(--color-card);
+    cursor: pointer;
+    font-size: 14px;
+    user-select: none;
+    min-height: 36px;
+  }
+  .filter-chip input { width: 18px; height: 18px; cursor: pointer; accent-color: var(--color-accent); }
+  .search-row {
+    display: flex;
+    gap: 8px;
+  }
+  #btnLoad {
+    flex: 1;
+    min-height: 48px;
+    border: none;
+    border-radius: 10px;
+    background: var(--color-accent);
+    color: #fff;
+    font-size: 16px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: opacity 0.2s;
+  }
+  #btnLoad:disabled { opacity: 0.5; cursor: not-allowed; }
+  #btnLoad:active:not(:disabled) { opacity: 0.8; }
+  /* Status */
+  .status-bar {
+    padding: 10px 16px;
+    font-size: 14px;
+    color: var(--color-muted);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .spinner {
+    width: 18px; height: 18px;
+    border: 2px solid rgba(255,255,255,0.2);
+    border-top-color: var(--color-accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    flex-shrink: 0;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  /* Toast */
+  .toast {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%) translateY(80px);
+    background: rgba(0,0,0,0.85);
+    color: #fff;
+    padding: 12px 20px;
+    border-radius: 24px;
+    font-size: 14px;
+    z-index: 9999;
+    transition: transform 0.3s ease;
+    white-space: nowrap;
+    max-width: 90vw;
+    text-align: center;
+  }
+  .toast.show { transform: translateX(-50%) translateY(0); }
+  /* Results */
+  #results { padding: 8px 12px 80px; }
+  /* Pick */
+  .pick-card {
+    background: linear-gradient(135deg, #0f3460, #1a5276);
+    border: 2px solid var(--color-gold);
+    border-radius: var(--radius);
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+  .pick-card h3 { color: var(--color-gold); font-size: 14px; margin-bottom: 8px; }
+  .pick-content { font-size: 18px; font-weight: 700; }
+  .pick-sub { font-size: 12px; color: var(--color-muted); margin-top: 4px; }
+  /* Venue accordion */
+  .venue-section {
+    background: var(--color-surface);
+    border-radius: var(--radius);
+    margin-bottom: 12px;
+    overflow: hidden;
+  }
+  .venue-header {
+    display: flex;
+    align-items: center;
+    padding: 14px 16px;
+    cursor: pointer;
+    gap: 10px;
+    user-select: none;
+    min-height: 52px;
+  }
+  .venue-header h2 { font-size: 16px; flex: 1; }
+  .match-badge {
+    background: var(--color-accent);
+    color: #fff;
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-size: 13px;
+    font-weight: 700;
+  }
+  .venue-header .chevron { transition: transform 0.2s; font-size: 12px; }
+  .venue-header.open .chevron { transform: rotate(180deg); }
+  .venue-body { display: none; }
+  .venue-body.open { display: block; }
+  /* Race section */
+  .race-section {
+    border-top: 1px solid rgba(255,255,255,0.06);
+  }
+  .race-header {
+    display: flex;
+    align-items: center;
+    padding: 12px 16px;
+    cursor: pointer;
+    gap: 8px;
+    min-height: 48px;
+    user-select: none;
+  }
+  .race-header h3 { font-size: 14px; flex: 1; color: var(--color-muted); }
+  .race-header.has-match h3 { color: var(--color-text); }
+  .race-body { display: none; }
+  .race-body.open { display: block; padding: 0 8px 12px; }
+  /* Table */
+  .horse-table { width: 100%; border-collapse: collapse; }
+  .horse-table th {
+    font-size: 11px;
+    color: var(--color-muted);
+    text-align: left;
+    padding: 6px 6px;
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+    white-space: nowrap;
+  }
+  .horse-table td {
+    font-size: 13px;
+    padding: 7px 6px;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    vertical-align: middle;
+  }
+  .horse-table tr.matched { background: rgba(233,69,96,0.12); }
+  .horse-table tr.matched td:first-child { border-left: 3px solid var(--color-accent); }
+  mark {
+    background: var(--color-gold);
+    color: #000;
+    border-radius: 3px;
+    padding: 0 1px;
+  }
+  .waku-badge {
+    display: inline-block;
+    width: 24px; height: 24px;
+    border-radius: 4px;
+    text-align: center;
+    line-height: 24px;
+    font-size: 12px;
+    font-weight: 700;
+  }
+  /* Match reasons */
+  .match-reasons { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+  .reason-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 2px 7px;
+    border-radius: 10px;
+    font-size: 11px;
+    background: rgba(255,255,255,0.1);
+    white-space: nowrap;
+  }
+  .reason-badge.stars-3 { background: rgba(255,215,0,0.25); color: var(--color-gold); }
+  .reason-badge.stars-2 { background: rgba(233,69,96,0.25); color: #ff8fa3; }
+  .reason-badge.stars-1 { background: rgba(100,180,255,0.2); color: #90c8ff; }
+  /* Share */
+  .share-btn {
+    background: none;
+    border: 1px solid rgba(255,255,255,0.2);
+    color: var(--color-muted);
+    border-radius: 8px;
+    padding: 6px 12px;
+    font-size: 13px;
+    cursor: pointer;
+    margin-top: 8px;
+  }
+  /* No results */
+  .empty-state {
+    text-align: center;
+    padding: 40px 20px;
+    color: var(--color-muted);
+    font-size: 15px;
+  }
+  .empty-state .icon { font-size: 48px; margin-bottom: 12px; }
+  /* Stats bar */
+  .stats-bar {
+    display: flex;
+    gap: 12px;
+    overflow-x: auto;
+    padding: 8px 0;
+    scrollbar-width: none;
+  }
+  .stats-bar::-webkit-scrollbar { display: none; }
+  .stat-chip {
+    flex-shrink: 0;
+    background: var(--color-card);
+    border-radius: 20px;
+    padding: 6px 14px;
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .stat-chip .label { color: var(--color-muted); }
+  .stat-chip .val { font-weight: 700; color: var(--color-gold); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🏇 競馬ダジャレ検索</h1>
+  <p>枠番・馬番の語呂合わせで馬を探そう</p>
+</header>
+
+<div class="controls">
+  <div class="date-nav">
+    <button id="btnPrevWeek" aria-label="前週">◀</button>
+    <div class="date-tabs">
+      <button class="date-tab" id="tabSat" onclick="selectTab(0)">
+        <span class="date-label-sat">土</span>
+        <span class="day-label">土曜</span>
+      </button>
+      <button class="date-tab" id="tabSun" onclick="selectTab(1)">
+        <span class="date-label-sun">日</span>
+        <span class="day-label">日曜</span>
+      </button>
+    </div>
+    <button id="btnNextWeek" aria-label="次週">▶</button>
+  </div>
+  <input type="date" id="customDate" onchange="onCustomDate()">
+  <div class="filters">
+    <label class="filter-chip"><input type="checkbox" id="fHorse" checked> 🐴 馬名</label>
+    <label class="filter-chip"><input type="checkbox" id="fJockey" checked> 🧑 騎手</label>
+    <label class="filter-chip"><input type="checkbox" id="fWaku" checked> 🟦 枠番連想</label>
+    <label class="filter-chip"><input type="checkbox" id="fUma" checked> 🔢 馬番連想</label>
+  </div>
+  <div class="search-row">
+    <button id="btnLoad" onclick="loadData()">🔍 データ取得・検索</button>
+  </div>
+</div>
+
+<div class="status-bar" id="statusBar">選択した日付でデータを取得します</div>
+<div id="results"></div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ==============================
+// ASSOCIATIONS TABLE
+// ==============================
+const ASSOCIATIONS = {
+  1: {
+    readings: ["イチ","ICHI","ワン","WAN","ONE","ヒト","いち","一","壱","単"],
+    colors: ["白","ホワイト","シロ","WHITE"],
+    misc: ["ファースト","トップ","エース","プリモ","ウノ","FIRST","ACE","TOP"]
+  },
+  2: {
+    readings: ["ニ","NI","ツー","TWO","フタ","二","弐","双","ペア","デュオ","DUO"],
+    colors: ["黒","ブラック","クロ","BLACK"],
+    misc: ["セカンド","ドッペル","デュース","ドス","ツイン","SECOND","TWIN","DEUCE"]
+  },
+  3: {
+    readings: ["サン","SAN","スリー","THREE","ミツ","三","参","ミ"],
+    colors: ["赤","レッド","アカ","RED"],
+    misc: ["トリオ","トレ","トライ","トリプル","TRIO","TRE","TRI","TRIPLE"]
+  },
+  4: {
+    readings: ["シ","ヨン","フォー","FOUR","ヨ","四","肆","YO","YON"],
+    colors: ["青","ブルー","アオ","BLUE"],
+    misc: ["クワルト","テトラ","カルテット","フォース","QUART","TETRA","QUARTET","FORCE"]
+  },
+  5: {
+    readings: ["ゴ","GO","ファイブ","FIVE","イツ","五","伍","ITSU"],
+    colors: ["黄","イエロー","キ","YELLOW"],
+    misc: ["クイント","ペンタ","ハイファイブ","QUINT","PENTA"]
+  },
+  6: {
+    readings: ["ロク","ROKU","シックス","SIX","ム","六","陸","MU"],
+    colors: ["緑","グリーン","ミドリ","GREEN"],
+    misc: ["ヘキサ","セスタ","シクスト","HEXA","SESTA","SIXT"]
+  },
+  7: {
+    readings: ["ナナ","シチ","セブン","SEVEN","ナナ","七","漆","NANA","SHICHI"],
+    colors: ["橙","オレンジ","ORANGE"],
+    misc: ["セプテン","ラッキーセブン","ラッキー7","SEPTEN","LUCKY","SEVEN"]
+  },
+  8: {
+    readings: ["ハチ","エイト","EIGHT","ヤ","八","捌","HACHI","YA"],
+    colors: ["ピンク","桃","モモ","ローズ","PINK","ROSE","MOMO"],
+    misc: ["オクタ","オクト","OKTA","OCTA","OCTO"]
+  },
+  9: {
+    readings: ["ク","キュー","ナイン","NINE","コ","九","玖","KU","KYU","KO"],
+    colors: [],
+    misc: ["ノーナ","ナイナー","NONA","NINER"]
+  },
+  10: {
+    readings: ["ジュウ","テン","TEN","トオ","十","JU","JUUU"],
+    colors: [],
+    misc: ["デカ","デシ","DECA","DECI"]
+  },
+  11: { readings: ["ジュウイチ","イレブン","ELEVEN","11"], colors: [], misc: [] },
+  12: { readings: ["ジュウニ","トゥエルブ","TWELVE","12"], colors: [], misc: [] },
+  13: { readings: ["ジュウサン","サーティーン","THIRTEEN","13"], colors: [], misc: [] },
+  14: { readings: ["ジュウシ","ジュウヨン","フォーティーン","FOURTEEN","14"], colors: [], misc: [] },
+  15: { readings: ["ジュウゴ","フィフティーン","FIFTEEN","15"], colors: [], misc: [] },
+  16: { readings: ["ジュウロク","シックスティーン","SIXTEEN","16"], colors: [], misc: [] },
+  17: { readings: ["ジュウナナ","ジュウシチ","セブンティーン","SEVENTEEN","17"], colors: [], misc: [] },
+  18: { readings: ["ジュウハチ","エイティーン","EIGHTEEN","18"], colors: [], misc: [] },
+};
+
+// Waku colors for badges
+const WAKU_COLORS = {
+  1: {bg:'#f0f0f0',text:'#333'},
+  2: {bg:'#111111',text:'#fff'},
+  3: {bg:'#e03030',text:'#fff'},
+  4: {bg:'#2060d0',text:'#fff'},
+  5: {bg:'#f0c000',text:'#333'},
+  6: {bg:'#20a040',text:'#fff'},
+  7: {bg:'#e07020',text:'#fff'},
+  8: {bg:'#e060a0',text:'#fff'},
+};
+
+// ==============================
+// TEXT NORMALIZATION
+// ==============================
+function normalize(str) {
+  if (!str) return '';
+  return str
+    .normalize('NFKC')
+    .toUpperCase()
+    .replace(/[\u3041-\u3096]/g, ch => String.fromCharCode(ch.charCodeAt(0) + 0x60)); // hiragana→katakana
+}
+
+// ==============================
+// MATCHING LOGIC
+// ==============================
+function getMatches(name, num, type) {
+  if (!num || !ASSOCIATIONS[num]) return [];
+  const assoc = ASSOCIATIONS[num];
+  const normName = normalize(name);
+  const results = [];
+  const allKws = [
+    ...assoc.readings.map(kw => ({ kw, cat: 'readings', stars: normName.startsWith(normalize(kw)) ? 3 : 2 })),
+    ...assoc.colors.map(kw => ({ kw, cat: 'colors', stars: 1 })),
+    ...assoc.misc.map(kw => ({ kw, cat: 'misc', stars: 1 })),
+  ];
+  for (const { kw, cat, stars } of allKws) {
+    const normKw = normalize(kw);
+    if (normKw.length < 2) continue; // skip single chars
+    if (normName.includes(normKw)) {
+      results.push({ kw, cat, stars, type, num });
+    }
+  }
+  return results;
+}
+
+function matchHorse(horse, filters) {
+  const matches = [];
+  if (filters.waku && filters.horse && horse.name) {
+    matches.push(...getMatches(horse.name, horse.waku, '枠番'));
+  }
+  if (filters.uma && filters.horse && horse.name) {
+    matches.push(...getMatches(horse.name, horse.uma, '馬番'));
+  }
+  if (filters.waku && filters.jockey && horse.jockey) {
+    matches.push(...getMatches(horse.jockey, horse.waku, '枠番'));
+  }
+  if (filters.uma && filters.jockey && horse.jockey) {
+    matches.push(...getMatches(horse.jockey, horse.uma, '馬番'));
+  }
+  return matches;
+}
+
+function highlightText(text, matches) {
+  if (!text || !matches.length) return escHtml(text || '');
+  let result = escHtml(text);
+  const done = new Set();
+  for (const m of matches) {
+    const normKw = normalize(m.kw);
+    const normText = normalize(text);
+    const idx = normText.indexOf(normKw);
+    if (idx === -1) continue;
+    const original = text.substring(idx, idx + m.kw.length);
+    if (done.has(original.toUpperCase())) continue;
+    done.add(original.toUpperCase());
+    result = result.replace(new RegExp(escRegex(escHtml(original)), 'gi'), `<mark>$&</mark>`);
+  }
+  return result;
+}
+
+function escHtml(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function escRegex(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+}
+
+// ==============================
+// DATE UTILITIES
+// ==============================
+let baseWeekOffset = 0;
+let selectedDate = null;
+
+function getWeekendDates(offset) {
+  const now = new Date();
+  const day = now.getDay();
+  // Find upcoming Saturday
+  const diffToSat = (6 - day + 7) % 7 || 7;
+  const sat = new Date(now);
+  sat.setDate(now.getDate() + diffToSat + offset * 7);
+  const sun = new Date(sat);
+  sun.setDate(sat.getDate() + 1);
+  return [sat, sun];
+}
+
+function fmt(d) {
+  return d.getFullYear() + ('0'+(d.getMonth()+1)).slice(-2) + ('0'+d.getDate()).slice(-2);
+}
+function fmtDisplay(d) {
+  const days = ['日','月','火','水','木','金','土'];
+  return `${d.getMonth()+1}/${d.getDate()}(${days[d.getDay()]})`;
+}
+function fmtISO(d) {
+  return `${d.getFullYear()}-${('0'+(d.getMonth()+1)).slice(-2)}-${('0'+d.getDate()).slice(-2)}`;
+}
+
+function updateDateUI() {
+  const [sat, sun] = getWeekendDates(baseWeekOffset);
+  document.querySelector('#tabSat .date-label-sat').textContent = fmtDisplay(sat);
+  document.querySelector('#tabSun .date-label-sun').textContent = fmtDisplay(sun);
+}
+
+function selectTab(idx) {
+  const [sat, sun] = getWeekendDates(baseWeekOffset);
+  selectedDate = idx === 0 ? sat : sun;
+  document.getElementById('tabSat').classList.toggle('active', idx === 0);
+  document.getElementById('tabSun').classList.toggle('active', idx === 1);
+  document.getElementById('customDate').value = fmtISO(selectedDate);
+}
+
+function onCustomDate() {
+  const val = document.getElementById('customDate').value;
+  if (!val) return;
+  selectedDate = new Date(val + 'T00:00:00');
+  document.getElementById('tabSat').classList.remove('active');
+  document.getElementById('tabSun').classList.remove('active');
+}
+
+document.getElementById('btnPrevWeek').onclick = () => {
+  baseWeekOffset--;
+  updateDateUI();
+  if (document.getElementById('tabSat').classList.contains('active')) selectTab(0);
+  else if (document.getElementById('tabSun').classList.contains('active')) selectTab(1);
+};
+document.getElementById('btnNextWeek').onclick = () => {
+  baseWeekOffset++;
+  updateDateUI();
+  if (document.getElementById('tabSat').classList.contains('active')) selectTab(0);
+  else if (document.getElementById('tabSun').classList.contains('active')) selectTab(1);
+};
+
+// Init
+updateDateUI();
+selectTab(0); // default: Saturday
+
+// ==============================
+// DATA FETCHING
+// ==============================
+const MEM_CACHE = {};
+
+// CORS proxy list — tried in order, first success wins
+const CORS_PROXIES = [
+  url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+  url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+  url => `https://thingproxy.freeboard.io/fetch/${url}`,
+];
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+async function fetchHtml(url) {
+  if (MEM_CACHE[url]) return MEM_CACHE[url];
+  let lastErr;
+  for (const proxyFn of CORS_PROXIES) {
+    try {
+      const proxyUrl = proxyFn(url);
+      const res = await fetch(proxyUrl, {
+        signal: AbortSignal.timeout(14000),
+        headers: { 'Accept': 'text/html,*/*', 'Accept-Language': 'ja,en' }
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const text = await res.text();
+      if (text.length < 200) throw new Error('response too short');
+      MEM_CACHE[url] = text;
+      return text;
+    } catch(e) {
+      lastErr = e;
+      console.warn('Proxy failed:', proxyFn(url), e.message);
+    }
+  }
+  throw lastErr || new Error('All proxies failed');
+}
+
+// Extract all 12-digit netkeiba race_ids from raw HTML text (works even on JS-rendered pages
+// where the data is embedded in <script> tags as JS variables)
+function extractRaceIds(html, yearPrefix) {
+  const seen = new Set();
+  // Matches: race_id=202506050811, race_id:"202506050811", 'race_id','202506050811', etc.
+  const re = /race_id[=:"',\s]+(\d{12})/g;
+  let m;
+  while ((m = re.exec(html)) !== null) {
+    if (!yearPrefix || m[1].startsWith(yearPrefix)) seen.add(m[1]);
+  }
+  // Also match bare 12-digit numbers in href attributes
+  const href = /href=["'][^"']*shutuba[^"']*race_id=(\d{12})/g;
+  while ((m = href.exec(html)) !== null) {
+    if (!yearPrefix || m[1].startsWith(yearPrefix)) seen.add(m[1]);
+  }
+  return [...seen].sort();
+}
+
+async function fetchRaceList(dateStr) {
+  const year = dateStr.slice(0, 4);
+  const url = `https://race.netkeiba.com/top/race_list.html?kaisai_date=${dateStr}`;
+  setStatus(`<div class="spinner"></div> レース一覧取得中 (${dateStr})...`);
+  const html = await fetchHtml(url);
+
+  // 1. Regex scan of the raw HTML/JS — catches IDs embedded in script blocks
+  const ids = extractRaceIds(html, year);
+
+  // 2. Also DOM-parse for any static links
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, 'text/html');
+  const seen = new Set(ids);
+  // Research-confirmed selectors for netkeiba race list
+  doc.querySelectorAll(
+    '.RaceList_DataItem a, a[href*="shutuba"], a[href*="race_id"]'
+  ).forEach(a => {
+    const href = a.getAttribute('href') || '';
+    const m = href.match(/race_id=(\d{12})/);
+    if (m && (!year || m[1].startsWith(year))) seen.add(m[1]);
+  });
+  // data-race-id attributes
+  doc.querySelectorAll('[data-race-id]').forEach(el => {
+    const rid = el.getAttribute('data-race-id');
+    if (rid && /^\d{12}$/.test(rid)) seen.add(rid);
+  });
+
+  const raceIds = [...seen].sort();
+  if (raceIds.length === 0) throw new Error(`race_id not found in page (${html.length} bytes)`);
+  return raceIds.map(raceId => ({ raceId }));
+}
+
+async function fetchRaceDetail(raceId) {
+  const url = `https://race.netkeiba.com/race/shutuba.html?race_id=${raceId}`;
+  const html = await fetchHtml(url);
+  return parseShutuba(html, raceId);
+}
+
+function parseShutuba(html, raceId) {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, 'text/html');
+
+  // Race title — try several known class names
+  const titleEl = doc.querySelector(
+    '.RaceName, .race_name, .RaceData01 span, h1.fntB, h2.fntB'
+  );
+  const raceNumEl = doc.querySelector('.RaceNum, .race_num');
+  const raceNum = raceNumEl ? raceNumEl.textContent.trim().replace(/\D/g,'') + 'R' : `${raceId.slice(10,12)}R`;
+  let raceName = titleEl ? titleEl.textContent.trim() : raceNum;
+  if (raceName && raceNumEl && !raceName.includes('R')) raceName = raceNum + ' ' + raceName;
+
+  // Venue from race_id
+  const venueCode = raceId.slice(4, 6);
+  const venueName = VENUE_CODES[venueCode] || `会場${venueCode}`;
+
+  // ── Strategy A: DOM table parsing ──────────────────────────────
+  const horses = [];
+  const tableSelectors = [
+    '.Shutuba_Table tr',
+    'table.Shutuba tr',
+    '#shutuba_table tr',
+    '.race_table_01 tr',
+    'table tr',          // last resort
+  ];
+  let rows = [];
+  for (const sel of tableSelectors) {
+    rows = [...doc.querySelectorAll(sel)];
+    if (rows.some(r => r.querySelectorAll('td').length >= 4)) break;
+  }
+
+  for (const row of rows) {
+    const cells = [...row.querySelectorAll('td')];
+    if (cells.length < 4) continue;
+
+    // waku: look for .Waku span or class with background color, else col 1
+    const wakuEl = row.querySelector('.Waku, .waku, [class*="Waku"]');
+    const umaEl  = row.querySelector('.Umaban, .umaban, [class*="Umaban"]');
+    // Horse name: look for anchor in .HorseName or nearby
+    const nameEl = row.querySelector(
+      '.HorseName a, .horse_name a, [class*="HorseName"] a, td:nth-child(4) a, td:nth-child(3) a'
+    );
+    // Jockey: look for anchor in .Jockey or nearby
+    const jockeyEl = row.querySelector(
+      '.Jockey a, .jockey a, [class*="Jockey"] a, td:nth-child(7) a, td:nth-child(6) a'
+    );
+
+    const waku   = parseInt((wakuEl || cells[0])?.textContent?.trim()) || 0;
+    const uma    = parseInt((umaEl  || cells[1])?.textContent?.trim()) || 0;
+    const name   = nameEl?.textContent?.trim() || cells[3]?.textContent?.trim() || '';
+    const jockey = jockeyEl?.textContent?.trim() || '';
+
+    if (uma >= 1 && uma <= 18 && name && name.length > 1) {
+      horses.push({ waku: waku || wakuFromUma(uma), uma, name: name.replace(/\s+/g,' '), jockey });
+    }
+  }
+
+  // ── Strategy B: Regex / JSON scan of raw HTML ───────────────────
+  if (horses.length === 0) {
+    const extracted = extractHorsesFromScript(html, raceId);
+    horses.push(...extracted);
+  }
+
+  if (!raceName || raceName.length < 2) raceName = `${venueName}${raceNum}`;
+
+  return { raceId, raceName, venueName, horses };
+}
+
+// Attempt to pull horse data from embedded JS objects/JSON in the page HTML.
+// netkeiba sometimes stores ShutubaInfo / EntryInfo as JS arrays in <script> tags.
+function extractHorsesFromScript(html, raceId) {
+  const horses = [];
+  // Look for array-like structures with umaban / horsename fields
+  // e.g. {"umaban":1,"wakuban":1,"horsename":"サンライズ","jockey":"川田将雅"}
+  const objRe = /\{[^{}]{20,500}\}/g;
+  let m;
+  while ((m = objRe.exec(html)) !== null) {
+    try {
+      const obj = JSON.parse(m[0]);
+      const uma = parseInt(obj.umaban || obj.horse_number || obj.num || 0);
+      const waku = parseInt(obj.wakuban || obj.bracket || obj.waku || 0);
+      const name = obj.horsename || obj.horse_name || obj.name || '';
+      const jockey = obj.jockey || obj.jockey_name || obj.jockeyname || '';
+      if (uma >= 1 && uma <= 18 && name && name.length > 1) {
+        horses.push({ uma, waku: waku || wakuFromUma(uma), name, jockey });
+      }
+    } catch(e) {}
+  }
+  return horses;
+}
+
+// Fallback waku from uma when waku is missing (standard JRA rule)
+function wakuFromUma(uma) {
+  // 1-2→1, 3-4→2, 5-6→3, 7-8→4, 9-10→5, 11-12→6, 13-14→7, 15-18→8
+  if (uma <= 2)  return 1;
+  if (uma <= 4)  return 2;
+  if (uma <= 6)  return 3;
+  if (uma <= 8)  return 4;
+  if (uma <= 10) return 5;
+  if (uma <= 12) return 6;
+  if (uma <= 14) return 7;
+  return 8;
+}
+
+const VENUE_CODES = {
+  '01':'札幌','02':'函館','03':'福島','04':'新潟','05':'東京','06':'中山',
+  '07':'中京','08':'京都','09':'阪神','10':'小倉','11':'地方','12':'海外'
+};
+
+// ==============================
+// DEMO DATA
+// ==============================
+function getDemoData(dateStr) {
+  return [
+    {
+      venueName: '阪神', raceId: 'DEMO001',
+      races: [
+        {
+          raceId: 'DEMO001', raceName: '阪神1R 3歳未勝利',
+          venueName: '阪神',
+          horses: [
+            { waku:1, uma:1, name:'サンライズホーン', jockey:'川田将雅' },
+            { waku:1, uma:2, name:'ブラックエンペラー', jockey:'武豊' },
+            { waku:2, uma:3, name:'ゴールデンスター', jockey:'福永祐一' },
+            { waku:2, uma:4, name:'ツインスピリット', jockey:'岩田望来' },
+            { waku:3, uma:5, name:'レッドフォックス', jockey:'松山弘平' },
+            { waku:3, uma:6, name:'サンダーストラック', jockey:'北村友一' },
+            { waku:4, uma:7, name:'ブルーオーシャン', jockey:'坂井瑠星' },
+            { waku:4, uma:8, name:'ヤマトノキセキ', jockey:'浜中俊' },
+            { waku:5, uma:9, name:'クリムゾンウィング', jockey:'和田竜二' },
+            { waku:5, uma:10, name:'テンダーロイン', jockey:'池添謙一' },
+            { waku:6, uma:11, name:'グリーンバレー', jockey:'藤岡佑介' },
+            { waku:6, uma:12, name:'エメラルドドリーム', jockey:'鮫島克駿' },
+            { waku:7, uma:13, name:'オレンジフラッシュ', jockey:'菱田裕二' },
+            { waku:7, uma:14, name:'ラッキーセブンスター', jockey:'西村淳也' },
+            { waku:8, uma:15, name:'ピンクダイヤモンド', jockey:'幸英明' },
+            { waku:8, uma:16, name:'ローズクイーン', jockey:'団野大成' },
+          ]
+        },
+        {
+          raceId: 'DEMO002', raceName: '阪神2R 4歳上1勝クラス',
+          venueName: '阪神',
+          horses: [
+            { waku:1, uma:1, name:'ホワイトソウル', jockey:'川田将雅' },
+            { waku:1, uma:2, name:'デュエルマスター', jockey:'武豊' },
+            { waku:2, uma:3, name:'トリプルクラウン', jockey:'福永祐一' },
+            { waku:3, uma:4, name:'スカーレットフェイス', jockey:'岩田望来' },
+            { waku:4, uma:5, name:'ゴールドシップ', jockey:'松山弘平' },
+            { waku:5, uma:6, name:'グリーンエコー', jockey:'北村友一' },
+            { waku:6, uma:7, name:'ナナコマワシ', jockey:'坂井瑠星' },
+            { waku:7, uma:8, name:'エイトコーナー', jockey:'浜中俊' },
+          ]
+        }
+      ]
+    },
+    {
+      venueName: '東京',
+      races: [
+        {
+          raceId: 'DEMO003', raceName: '東京1R 3歳未勝利',
+          venueName: '東京',
+          horses: [
+            { waku:1, uma:1, name:'ウノカミカゼ', jockey:'戸崎圭太' },
+            { waku:2, uma:2, name:'ブラックパール', jockey:'横山武史' },
+            { waku:3, uma:3, name:'サンシャインロード', jockey:'田辺裕信' },
+            { waku:4, uma:4, name:'ネイビーブルー', jockey:'内田博幸' },
+            { waku:5, uma:5, name:'イエローフラッシュ', jockey:'柴田善臣' },
+            { waku:6, uma:6, name:'フォレストランナー', jockey:'大野拓弥' },
+            { waku:7, uma:7, name:'ラッキーチャーム', jockey:'石橋脩' },
+            { waku:8, uma:8, name:'モモタロウ', jockey:'丸田恭介' },
+          ]
+        }
+      ]
+    }
+  ];
+}
+
+// ==============================
+// MAIN LOAD
+// ==============================
+let isLoading = false;
+
+async function loadData() {
+  if (isLoading) return;
+  if (!selectedDate) { showToast('日付を選択してください'); return; }
+  isLoading = true;
+  document.getElementById('btnLoad').disabled = true;
+  setStatus('<div class="spinner"></div> データ取得中...');
+  document.getElementById('results').innerHTML = '';
+
+  const dateStr = fmt(selectedDate);
+  const sessionKey = `races_${dateStr}`;
+
+  let venues = null;
+
+  // Check session cache
+  try {
+    const cached = sessionStorage.getItem(sessionKey);
+    if (cached) {
+      venues = JSON.parse(cached);
+      showToast('キャッシュからデータを読み込みました');
+    }
+  } catch(e) {}
+
+  if (!venues) {
+    try {
+      venues = await fetchAndParse(dateStr);
+      try { sessionStorage.setItem(sessionKey, JSON.stringify(venues)); } catch(e) {}
+    } catch(e) {
+      console.error('Fetch failed:', e);
+      const reason = e.message || String(e);
+      showToast(`⚠️ 取得失敗: ${reason.slice(0,60)}。サンプルデータで表示します`);
+      setStatus(`⚠️ 取得失敗 (${reason.slice(0,80)}) — デモデータを表示`);
+      const demoData = getDemoData(dateStr);
+      venues = groupByVenue(demoData.flatMap(v => v.races));
+    }
+  }
+
+  isLoading = false;
+  document.getElementById('btnLoad').disabled = false;
+
+  if (!venues || venues.length === 0) {
+    setStatus('この日はレースがありません');
+    document.getElementById('results').innerHTML = `<div class="empty-state"><div class="icon">🏁</div>この週末はレースがありません</div>`;
+    return;
+  }
+
+  renderResults(venues);
+}
+
+async function fetchAndParse(dateStr) {
+  const raceList = await fetchRaceList(dateStr);
+  if (!raceList.length) throw new Error('race_idが見つかりません。この日はレースなし、または取得不可');
+  // Limit to 36 races (3 venues × 12R) to keep response time reasonable
+  const limited = raceList.slice(0, 36);
+  setStatus(`<div class="spinner"></div> 出走表取得中 (0/${limited.length})...`);
+  const races = [];
+  for (let i = 0; i < limited.length; i++) {
+    const { raceId } = limited[i];
+    try {
+      const race = await fetchRaceDetail(raceId);
+      if (race.horses.length > 0) races.push(race);
+      setStatus(`<div class="spinner"></div> 出走表取得中 (${i+1}/${limited.length}) — ${race.venueName} ${race.raceName}`);
+    } catch(e) {
+      console.warn('Race parse failed:', raceId, e.message);
+    }
+    if (i < limited.length - 1) await sleep(400);
+  }
+  if (!races.length) throw new Error('出走馬データを取得できませんでした（JS動的ページの可能性）');
+  return groupByVenue(races);
+}
+
+function groupByVenue(races) {
+  const map = {};
+  for (const r of races) {
+    const key = r.venueName || '不明';
+    if (!map[key]) map[key] = { venueName: key, races: [] };
+    map[key].races.push(r);
+  }
+  return Object.values(map);
+}
+
+// ==============================
+// RENDER
+// ==============================
+function getFilters() {
+  return {
+    horse: document.getElementById('fHorse').checked,
+    jockey: document.getElementById('fJockey').checked,
+    waku: document.getElementById('fWaku').checked,
+    uma: document.getElementById('fUma').checked,
+  };
+}
+
+function renderResults(venues) {
+  const filters = getFilters();
+  const results = document.getElementById('results');
+  let totalMatches = 0;
+  let topHorse = null;
+  let topScore = 0;
+  const venueHtmls = [];
+  const wakuStats = {};
+
+  for (const venue of venues) {
+    let venueMatches = 0;
+    const raceHtmls = [];
+    for (const race of venue.races) {
+      const matchedHorses = [];
+      for (const h of race.horses) {
+        const matches = matchHorse(h, filters);
+        if (matches.length) {
+          const score = matches.reduce((s,m) => s + m.stars, 0);
+          matchedHorses.push({ ...h, matches, score });
+          totalMatches++;
+          venueMatches++;
+          if (score > topScore) { topScore = score; topHorse = { ...h, matches, race }; }
+          matches.forEach(m => { wakuStats[m.num] = (wakuStats[m.num] || 0) + 1; });
+        }
+      }
+      raceHtmls.push(renderRace(race, matchedHorses, filters));
+    }
+    venueHtmls.push(renderVenue(venue, raceHtmls, venueMatches));
+  }
+
+  // Stats
+  const statsItems = Object.entries(wakuStats)
+    .sort((a,b) => b[1]-a[1])
+    .slice(0,5)
+    .map(([n,c]) => {
+      const wc = WAKU_COLORS[n] || {bg:'#444',text:'#fff'};
+      return `<div class="stat-chip"><span class="waku-badge" style="background:${wc.bg};color:${wc.text}">${n}</span><span class="label">番</span><span class="val">${c}件</span></div>`;
+    }).join('');
+
+  // Top pick
+  let pickHtml = '';
+  if (topHorse) {
+    const reasons = topHorse.matches.map(m => `${m.type}${m.num}番「${m.kw}」`).join('、');
+    pickHtml = `<div class="pick-card">
+      <h3>🏆 今日のイチオシ</h3>
+      <div class="pick-content">🐴 ${escHtml(topHorse.name)}</div>
+      <div class="pick-sub">${escHtml(topHorse.race?.raceName || '')} ｜ 馬番${topHorse.uma}番</div>
+      <div class="pick-sub" style="margin-top:6px">マッチ理由: ${escHtml(reasons)}</div>
+      <button class="share-btn" onclick="shareHorse(${JSON.stringify(topHorse.uma)}, ${JSON.stringify(topHorse.name)}, ${JSON.stringify(topHorse.race?.raceName || '')}, ${JSON.stringify(reasons)})">📋 結果をコピー</button>
+    </div>`;
+  }
+
+  let statsHtml = statsItems ? `<div class="stats-bar">${statsItems}</div>` : '';
+
+  setStatus(`✅ ${totalMatches}件のダジャレマッチ（${venues.length}会場）`);
+  results.innerHTML = pickHtml + statsHtml + venueHtmls.join('');
+  attachAccordions();
+}
+
+function renderVenue(venue, raceHtmls, venueMatches) {
+  const badge = venueMatches > 0 ? `<span class="match-badge">${venueMatches}</span>` : '';
+  return `<div class="venue-section">
+    <div class="venue-header open" onclick="toggleVenue(this)">
+      <h2>🏟 ${escHtml(venue.venueName)}</h2>
+      ${badge}
+      <span class="chevron">▲</span>
+    </div>
+    <div class="venue-body open">${raceHtmls.join('')}</div>
+  </div>`;
+}
+
+function renderRace(race, matchedHorses, filters) {
+  const hasMatch = matchedHorses.length > 0;
+  const badge = hasMatch ? `<span class="match-badge">${matchedHorses.length}</span>` : '';
+  const matchedIds = new Set(matchedHorses.map(h => h.uma));
+  const rows = race.horses.map(h => {
+    const mh = matchedHorses.find(m => m.uma === h.uma);
+    return renderHorseRow(h, mh ? mh.matches : [], filters);
+  }).join('');
+  return `<div class="race-section">
+    <div class="race-header ${hasMatch ? 'has-match' : ''}" onclick="toggleRace(this)">
+      <h3>${escHtml(race.raceName)}</h3>
+      ${badge}
+      <span class="chevron" style="font-size:12px;color:var(--color-muted)">▼</span>
+    </div>
+    <div class="race-body ${hasMatch ? 'open' : ''}">
+      <table class="horse-table">
+        <thead><tr><th>枠</th><th>馬番</th><th>馬名</th><th>騎手</th><th>マッチ</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  </div>`;
+}
+
+function renderHorseRow(horse, matches, filters) {
+  const matched = matches.length > 0;
+  const wc = WAKU_COLORS[horse.waku] || {bg:'#444',text:'#fff'};
+  const wakuBadge = `<span class="waku-badge" style="background:${wc.bg};color:${wc.text}">${horse.waku || '-'}</span>`;
+
+  const horseNameMatches = matches.filter(m =>
+    m.type === '馬番' || (m.type === '枠番' && filters.horse)
+  );
+  const jockeyMatches = matches.filter(m => filters.jockey);
+
+  let horseName = highlightText(horse.name, horseNameMatches.filter(m => {
+    const nkw = normalize(m.kw);
+    const nn = normalize(horse.name || '');
+    return nn.includes(nkw);
+  }));
+  let jockeyName = highlightText(horse.jockey, jockeyMatches.filter(m => {
+    const nkw = normalize(m.kw);
+    const nj = normalize(horse.jockey || '');
+    return nj.includes(nkw);
+  }));
+
+  const reasonBadges = matches.map(m => {
+    const star = '★'.repeat(m.stars) + '☆'.repeat(3 - m.stars);
+    return `<span class="reason-badge stars-${m.stars}">🔢${m.type}${m.num} "${escHtml(m.kw)}"</span>`;
+  }).join('');
+
+  return `<tr class="${matched ? 'matched' : ''}">
+    <td>${wakuBadge}</td>
+    <td style="text-align:center">${horse.uma || '-'}</td>
+    <td>${horseName}</td>
+    <td style="font-size:12px">${jockeyName}</td>
+    <td>${reasonBadges ? `<div class="match-reasons">${reasonBadges}</div>` : ''}</td>
+  </tr>`;
+}
+
+// ==============================
+// ACCORDION
+// ==============================
+function attachAccordions() {}
+
+function toggleVenue(header) {
+  header.classList.toggle('open');
+  const body = header.nextElementSibling;
+  body.classList.toggle('open');
+}
+
+function toggleRace(header) {
+  header.classList.toggle('open');
+  const body = header.nextElementSibling;
+  body.classList.toggle('open');
+}
+
+// ==============================
+// SHARE
+// ==============================
+function shareHorse(uma, name, raceName, reasons) {
+  const text = `🏇 ${raceName} ${uma}番 ${name}\nダジャレマッチ: ${reasons}`;
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(text).then(() => showToast('📋 コピーしました！'));
+  } else {
+    prompt('コピーしてください:', text);
+  }
+}
+
+// ==============================
+// UTILS
+// ==============================
+function setStatus(html) {
+  document.getElementById('statusBar').innerHTML = html;
+}
+
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 3000);
+}
+</script>
+</body>
+</html>
