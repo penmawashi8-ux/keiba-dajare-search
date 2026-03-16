@@ -620,8 +620,9 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function clearCache() {
   const n = Object.keys(MEM_CACHE).length;
   Object.keys(MEM_CACHE).forEach(k => delete MEM_CACHE[k]);
+  sessionStorage.clear();
   showToast(`キャッシュをクリアしました (${n}件)`);
-  dbg(`Cache cleared: ${n} entries`);
+  dbg(`Cache cleared: ${n} entries + sessionStorage`);
 }
 
 function dbg(msg) {
