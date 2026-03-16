@@ -630,45 +630,57 @@ function dbg(msg) {
   if (el) { el.textContent += msg + '\n'; el.scrollTop = el.scrollHeight; }
 }
 
+// Semaphore: cap concurrent proxy requests to avoid rate-limiting allorigins.win
+function makeSemaphore(max) {
+  let active = 0;
+  const queue = [];
+  return async function run(fn) {
+    if (active >= max) await new Promise(r => queue.push(r));
+    active++;
+    try { return await fn(); }
+    finally { active--; if (queue.length) queue.shift()(); }
+  };
+}
+const fetchSem = makeSemaphore(2);
+
 async function fetchHtml(url) {
   if (MEM_CACHE[url]) { dbg(`CACHE: ${url.slice(-50)}`); return MEM_CACHE[url]; }
-  // Race all proxies simultaneously — fastest responder wins, others get aborted
-  const controllers = CORS_PROXIES.map(() => new AbortController());
-  const attempts = CORS_PROXIES.map((proxyFn, i) => (async () => {
-    const proxyUrl = proxyFn(url);
-    const host = new URL(proxyUrl).hostname;
-    dbg(`TRY ${host} → ${url.slice(8, 60)}`);
-    const res = await fetch(proxyUrl, {
-      signal: AbortSignal.any([controllers[i].signal, AbortSignal.timeout(8000)]),
-      headers: { 'Accept': 'text/html,*/*', 'Accept-Language': 'ja,en;q=0.8' }
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const buf = await res.arrayBuffer();
-    const peek = new TextDecoder('latin1').decode(new Uint8Array(buf, 0, 2000));
-    const charsetMatch = peek.match(/charset=["']?\s*([^"'>\s;]+)/i);
-    let charset = (charsetMatch?.[1] || '').toLowerCase().replace(/[-_]/g, '');
-    if (charset.includes('eucjp') || charset.includes('eucjis') || charset.includes('euc')) {
-      charset = 'euc-jp';
-    } else if (charset.includes('shiftjis') || charset.includes('sjis') || charset.includes('windows31j') || charset === 'ms932') {
-      charset = 'shift-jis';
-    } else {
-      charset = 'utf-8';
+  return fetchSem(async () => {
+    let lastErr;
+    for (const proxyFn of CORS_PROXIES) {
+      const proxyUrl = proxyFn(url);
+      const host = new URL(proxyUrl).hostname;
+      try {
+        dbg(`TRY ${host} → ${url.slice(8, 60)}`);
+        const res = await fetch(proxyUrl, {
+          signal: AbortSignal.timeout(8000),
+          headers: { 'Accept': 'text/html,*/*', 'Accept-Language': 'ja,en;q=0.8' }
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const buf = await res.arrayBuffer();
+        const peek = new TextDecoder('latin1').decode(new Uint8Array(buf, 0, 2000));
+        const charsetMatch = peek.match(/charset=["']?\s*([^"'>\s;]+)/i);
+        let charset = (charsetMatch?.[1] || '').toLowerCase().replace(/[-_]/g, '');
+        if (charset.includes('eucjp') || charset.includes('eucjis') || charset.includes('euc')) {
+          charset = 'euc-jp';
+        } else if (charset.includes('shiftjis') || charset.includes('sjis') || charset.includes('windows31j') || charset === 'ms932') {
+          charset = 'shift-jis';
+        } else {
+          charset = 'utf-8';
+        }
+        const text = new TextDecoder(charset).decode(buf);
+        const badRatio = (text.match(/\uFFFD/g) || []).length / Math.max(text.length, 1);
+        if (badRatio > 0.01) throw new Error(`文字化け (${(badRatio*100).toFixed(1)}%)`);
+        dbg(`OK ${host}: ${charset} ${text.length}B`);
+        MEM_CACHE[url] = text;
+        return text;
+      } catch(e) {
+        dbg(`FAIL ${host}: ${e.message}`);
+        lastErr = e;
+      }
     }
-    const text = new TextDecoder(charset).decode(buf);
-    const badRatio = (text.match(/\uFFFD/g) || []).length / Math.max(text.length, 1);
-    if (badRatio > 0.01) throw new Error(`文字化け (${(badRatio*100).toFixed(1)}%)`);
-    dbg(`OK ${host}: ${charset} ${text.length}B`);
-    return text;
-  })());
-  try {
-    const text = await Promise.any(attempts);
-    controllers.forEach(c => c.abort()); // cancel remaining in-flight requests
-    MEM_CACHE[url] = text;
-    return text;
-  } catch(e) {
-    const msg = e instanceof AggregateError ? e.errors.map(x => x.message).join(' / ') : e.message;
-    throw new Error(`All proxies failed: ${msg}`);
-  }
+    throw lastErr || new Error('All proxies failed');
+  });
 }
 
 // Extract all 12-digit netkeiba race_ids from raw HTML text
@@ -744,10 +756,10 @@ async function fetchRaceList(dateStr) {
 }
 
 async function fetchRaceDetail(raceId) {
-  // Try sp.netkeiba.com (mobile) first — lighter page, correct selector now known
+  // Desktop page parses correctly; SP page returns 0頭 → try desktop first
   const urls = [
-    `https://race.sp.netkeiba.com/?pid=shutuba&race_id=${raceId}`,
     `https://race.netkeiba.com/race/shutuba.html?race_id=${raceId}`,
+    `https://race.sp.netkeiba.com/?pid=shutuba&race_id=${raceId}`,
   ];
   for (const url of urls) {
     try {
@@ -1059,25 +1071,19 @@ async function fetchAndParse(dateStr) {
   // Limit to 36 races (3 venues × 12R) to keep response time reasonable
   const limited = raceList.slice(0, 36);
   setStatus(`<div class="spinner"></div> 出走表取得中 (0/${limited.length})...`);
-  // Staggered groups of 4: start each race 200ms apart, wait for group, then next group.
-  // Combined with proxy racing, expected time per race ≈ fastest proxy (~600ms).
-  const BATCH = 4;
+  // Queue all races at once — fetchSem(2) inside fetchHtml caps concurrency at 2.
+  // Results arrive as each finishes; render progressively so user sees data immediately.
   const races = [];
-  for (let i = 0; i < limited.length; i += BATCH) {
-    const batch = limited.slice(i, i + BATCH);
-    const promises = [];
-    for (let j = 0; j < batch.length; j++) {
-      if (j > 0) await sleep(200); // stagger each start
-      promises.push(fetchRaceDetail(batch[j].raceId));
+  let completed = 0;
+  await Promise.all(limited.map(async ({ raceId }) => {
+    const race = await fetchRaceDetail(raceId);
+    completed++;
+    setStatus(`<div class="spinner"></div> 出走表取得中 (${completed}/${limited.length})...`);
+    if (race.horses.length > 0) {
+      races.push(race);
+      if (completed <= 6 || completed % 6 === 0) renderResults(groupByVenue(races));
     }
-    const results = await Promise.all(promises);
-    for (const r of results) {
-      if (r?.horses.length > 0) races.push(r);
-    }
-    setStatus(`<div class="spinner"></div> 出走表取得中 (${Math.min(i + BATCH, limited.length)}/${limited.length})...`);
-    if (races.length > 0 && i === 0) renderResults(groupByVenue(races)); // show first batch fast
-    if (i + BATCH < limited.length) await sleep(150);
-  }
+  }));
   if (!races.length) throw new Error('出走馬データを取得できませんでした（JS動的ページの可能性）');
   return groupByVenue(races);
 }
