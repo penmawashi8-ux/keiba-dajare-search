@@ -532,8 +532,8 @@ let selectedDate = null;
 function getWeekendDates(offset) {
   const now = new Date();
   const day = now.getDay();
-  // Find upcoming Saturday
-  const diffToSat = (6 - day + 7) % 7 || 7;
+  // Find this/upcoming Saturday: today if Sat, yesterday if Sun, otherwise next Sat
+  const diffToSat = day === 0 ? -1 : (6 - day + 7) % 7;
   const sat = new Date(now);
   sat.setDate(now.getDate() + diffToSat + offset * 7);
   const sun = new Date(sat);
@@ -603,10 +603,10 @@ const PROXY_SKIP_AFTER = 3;
 const KAISAI_JSON_URL = 'https://raw.githubusercontent.com/penmawashi8-ux/keiba-auto-betting/main/kaisai.json';
 
 // CORS proxy list — tried in order, first success wins.
-// api.allorigins.win is the most reliable for netkeiba.
 const CORS_PROXIES = [
-  url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
   url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+  url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+  url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
   url => `https://thingproxy.freeboard.io/fetch/${url}`,
 ];
 
@@ -690,35 +690,31 @@ async function fetchRaceList(dateStr) {
     dbg(`kaisai.json failed: ${e.message}`);
   }
 
-  // ── Fallback: scrape race list page via proxy ──────────────────
+  // ── Fallback: scrape SP race list page via proxy ──────────────────
+  // NOTE: race.netkeiba.com/top/race_list.html is a SPA (loads race IDs via JS),
+  //       so it always returns 0 IDs when fetched without a browser. Use SP only.
   const year = dateStr.slice(0, 4);
-  const listUrls = [
-    `https://race.sp.netkeiba.com/?pid=race_list&kaisai_date=${dateStr}`,
-    `https://race.netkeiba.com/top/race_list.html?kaisai_date=${dateStr}`,
-  ];
-  let lastErr;
-  for (const url of listUrls) {
-    try {
-      const html = await fetchHtml(url);
-      const seen = new Set(extractRaceIds(html, year));
-      const doc = new DOMParser().parseFromString(html, 'text/html');
-      doc.querySelectorAll('a[href*="race_id"]').forEach(a => {
-        const m = (a.getAttribute('href') || '').match(/race_id=(\d{12})/);
-        if (m) seen.add(m[1]);
-      });
-      doc.querySelectorAll('[data-race-id]').forEach(el => {
-        const rid = el.getAttribute('data-race-id');
-        if (rid && /^\d{12}$/.test(rid)) seen.add(rid);
-      });
-      const ids = [...seen].sort();
-      dbg(`Race list from ${url.slice(8, 40)}: ${ids.length} IDs`);
-      if (ids.length > 0) return ids.map(raceId => ({ raceId }));
-    } catch(e) {
-      dbg(`Race list failed: ${e.message}`);
-      lastErr = e;
-    }
+  const spUrl = `https://race.sp.netkeiba.com/?pid=race_list&kaisai_date=${dateStr}`;
+  try {
+    const html = await fetchHtml(spUrl);
+    const seen = new Set(extractRaceIds(html, year));
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    doc.querySelectorAll('a[href*="race_id"]').forEach(a => {
+      const m = (a.getAttribute('href') || '').match(/race_id=(\d{12})/);
+      if (m) seen.add(m[1]);
+    });
+    doc.querySelectorAll('[data-race-id]').forEach(el => {
+      const rid = el.getAttribute('data-race-id');
+      if (rid && /^\d{12}$/.test(rid)) seen.add(rid);
+    });
+    const ids = [...seen].sort();
+    dbg(`SP race list: ${ids.length} IDs`);
+    if (ids.length > 0) return ids.map(raceId => ({ raceId }));
+    dbg('SP race list: 0 IDs (おそらく開催なし)');
+  } catch(e) {
+    dbg(`SP race list failed: ${e.message}`);
   }
-  throw lastErr || new Error('レース一覧の取得に失敗');
+  throw new Error(`${dateStr}のレースデータが見つかりません。kaisai.jsonが未更新か開催なしの日程です。`);
 }
 
 async function fetchRaceDetail(raceId) {
