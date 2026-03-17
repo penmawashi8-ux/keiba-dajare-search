@@ -759,16 +759,26 @@ function parseShutuba(html, raceId) {
   if (spRows.length > 0) {
     for (const row of spRows) {
       const cells = [...row.querySelectorAll('td')];
-      if (cells.length < 3) continue;
-      const wakuEl   = row.querySelector('[class*="Waku"], td.Waku');
-      const umaEl    = row.querySelector('[class*="Umaban"], td.Umaban');
+      if (cells.length < 2) continue;
+      // Waku: try class name digit (Waku6 → 6) first, then textContent
+      const wakuEl = row.querySelector('[class*="Waku"], td.Waku');
+      const wakuClassM = [...cells].map(c => c.className.match(/(?:^|\s)Waku(\d)(?:\s|$)/)).find(Boolean);
+      const waku = parseInt(wakuClassM?.[1]) || parseInt(wakuEl?.textContent?.trim()) || 0;
+      // Uma: try explicit element first, then scan cells for pure integer
+      const umaEl = row.querySelector('[class*="Umaban"], td.Umaban, [class*="HorseNum"]');
+      let uma = parseInt(umaEl?.textContent?.trim()) || 0;
+      if (!uma) {
+        for (const cell of cells.slice(0, 3)) {
+          const txt = cell.textContent.trim();
+          if (/^\d+$/.test(txt)) { const n = parseInt(txt); if (n >= 1 && n <= 18) { uma = n; break; } }
+        }
+      }
+      if (!uma) uma = horses.length + 1; // fallback: row order
       // Horse name: anchor linking to horse modal or horse DB page
       const nameEl   = row.querySelector('a[href*="rf=shutuba_modal"]') ||
                        row.querySelector('a[href*="/horse/"]');
       // Jockey: anchor linking to jockey page — the reliable selector
       const jockeyEl = row.querySelector('a[href*="/jockey/"]');
-      const waku   = parseInt((wakuEl || cells[0])?.textContent?.trim()) || 0;
-      const uma    = parseInt((umaEl  || cells[1])?.textContent?.trim()) || 0;
       const name   = nameEl?.textContent?.trim() || '';
       const jockey = jockeyEl?.textContent?.trim() || '';
       if (uma >= 1 && uma <= 18 && name.length > 1)
