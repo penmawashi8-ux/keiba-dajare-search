@@ -758,7 +758,40 @@ async function fetchRaceList(dateStr) {
 }
 
 async function fetchRaceDetail(raceId) {
-  // Try SP (mobile) first — lighter page, known-working tr.HorseList structure
+  // ── Strategy 0: netkeiba JSON API (no CORS proxy needed) ────────────
+  // api_get_jra_odds.html?action=init returns data.horses with horse names
+  // Same API that keiba-auto-betting uses — CORS-enabled, Referer required
+  try {
+    const apiUrl = `https://race.netkeiba.com/api/api_get_jra_odds.html?race_id=${raceId}&type=1&action=init`;
+    const res = await fetch(apiUrl, {
+      signal: AbortSignal.timeout(8000),
+      headers: { 'Referer': 'https://race.netkeiba.com/', 'Accept': 'application/json,*/*' },
+    });
+    if (res.ok) {
+      const json = await res.json();
+      const horses = json?.data?.horses || [];
+      if (horses.length > 0) {
+        const venueCode = raceId.slice(4, 6);
+        const raceNum = parseInt(raceId.slice(10, 12), 10);
+        const parsed = horses.map(h => ({
+          waku: parseInt(h.waku_num || h.waku || 0) || 0,
+          uma:  parseInt(h.horse_num || h.num || 0) || 0,
+          name: (h.horse_name || h.name || '').trim(),
+          jockey: (h.jockey_name || h.jockey || '').trim(),
+        })).filter(h => h.uma >= 1 && h.uma <= 18 && h.name.length > 1);
+        if (parsed.length > 0) {
+          dbg(`API ${raceId}: ${parsed.length}頭`);
+          const raceName = `${raceNum}R`;
+          const venueName = VENUE_CODES[venueCode] || `会場${venueCode}`;
+          return { raceId, raceName, venueName, horses: parsed };
+        }
+      }
+    }
+  } catch(e) {
+    dbg(`API ${raceId}: ${e.message}`);
+  }
+
+  // ── Strategy 1: HTML via CORS proxy ────────────────────────────────
   const urls = [
     `https://race.sp.netkeiba.com/?pid=shutuba&race_id=${raceId}`,
     `https://race.netkeiba.com/race/shutuba.html?race_id=${raceId}`,
