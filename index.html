@@ -648,6 +648,9 @@ function makeSemaphore(max, cooldownMs = 0) {
 }
 // 2 concurrent, 400ms cooldown → max ~2 req/1.4s to allorigins.win, avoids burst rate limit
 const fetchSem = makeSemaphore(2, 400);
+// Limit concurrent fetchRaceDetail calls (each tries JSON API before HTML)
+// Without this, 36 simultaneous JSON API fetches flood allorigins.win before the semaphore kicks in
+const fetchDetailSem = makeSemaphore(5, 0);
 
 async function fetchHtml(url) {
   if (MEM_CACHE[url]) { dbg(`CACHE: ${url.slice(-50)}`); return MEM_CACHE[url]; }
@@ -792,9 +795,11 @@ async function fetchRaceDetail(raceId) {
   }
 
   // ── Strategy 1: HTML via CORS proxy ────────────────────────────────
+  // Desktop URL first: returns 15 cells/row → reliable parsing (Strategy A2)
+  // SP URL second: returns 5 cells/row, parses with Strategy A1
   const urls = [
-    `https://race.sp.netkeiba.com/?pid=shutuba&race_id=${raceId}`,
     `https://race.netkeiba.com/race/shutuba.html?race_id=${raceId}`,
+    `https://race.sp.netkeiba.com/?pid=shutuba&race_id=${raceId}`,
   ];
   for (const url of urls) {
     try {
@@ -877,27 +882,46 @@ function parseShutuba(html, raceId) {
       if (cells.length < 2) continue;
       const wakuEl = row.querySelector('[class*="Waku"], td.Waku');
       const umaEl  = row.querySelector('[class*="Umaban"], td.Umaban');
-      // Try multiple anchor patterns for horse name (SP uses different href than desktop)
-      // SP: a[href*="/horse/"] matches both modal/horse.html (no text) and db.sp.netkeiba.com/horse/ (has name)
-      // Must prefer the db link, otherwise textContent is empty → 0頭
-      const nameEl =
+
+      // Umaban: textContent first, fall back to class suffix (e.g. class="Umaban01" with empty text)
+      const umaFromText = parseInt(umaEl?.textContent?.trim());
+      const umaFromClass = parseInt((umaEl?.className?.match(/Umaban(\d+)/i) || [])[1]);
+      const uma = (Number.isFinite(umaFromText) && umaFromText >= 1 ? umaFromText : umaFromClass) ||
+                  parseInt(cells[1]?.textContent?.trim()) || 0;
+
+      // Waku: same pattern
+      const wakuFromText = parseInt(wakuEl?.textContent?.trim());
+      const wakuFromCls  = parseInt((wakuEl?.className?.match(/Waku(\d+)/i) || [])[1]);
+      const waku = (Number.isFinite(wakuFromText) && wakuFromText >= 1 ? wakuFromText : wakuFromCls) ||
+                   parseInt(cells[0]?.textContent?.trim()) || 0;
+
+      // Horse name: prefer db link text; if empty try parent cell text (name may sit outside the <a>)
+      const nameAnchor =
         row.querySelector('a[href*="db.sp.netkeiba.com/horse/"]') ||
         row.querySelector('a[href*="rf=shutuba_modal"]') ||
         row.querySelector('a[href*="horse_id"]') ||
-        row.querySelector('a[href*="pid=jt"]') ||
         cells[3]?.querySelector('a') ||
         cells[4]?.querySelector('a') ||
         cells[2]?.querySelector('a');
+      let name = nameAnchor?.textContent?.trim() || '';
+      if (name.length <= 1 && nameAnchor) {
+        // Name not inside anchor — grab cell text, strip modal/icon-only links
+        const nameCell = nameAnchor.closest('td');
+        if (nameCell) {
+          const clone = nameCell.cloneNode(true);
+          clone.querySelectorAll('a[href*="modal"], a[href*="pid=horse_bookmark"]').forEach(a => a.remove());
+          name = clone.textContent.trim().replace(/\s+/g, ' ');
+        }
+      }
+
       const jockeyEl =
         row.querySelector('a[href*="db.sp.netkeiba.com/jockey/"]') ||
         row.querySelector('a[href*="/jockey/"]') ||
         row.querySelector('a[href*="jockey_id"]') ||
         cells[3]?.querySelector('a') ||
         cells[4]?.querySelector('a');
-      const waku   = parseInt((wakuEl || cells[0])?.textContent?.trim()) || 0;
-      const uma    = parseInt((umaEl  || cells[1])?.textContent?.trim()) || 0;
-      const name   = nameEl?.textContent?.trim() || '';
       const jockey = jockeyEl?.textContent?.trim() || '';
+
       if (uma >= 1 && uma <= 18 && name.length > 1)
         horses.push({ waku: waku || wakuFromUma(uma), uma, name: name.replace(/\s+/g,' '), jockey });
     }
@@ -1116,7 +1140,7 @@ async function fetchAndParse(dateStr) {
   let completed = 0;
   const failedIds = [];
   await Promise.all(limited.map(async ({ raceId }) => {
-    const race = await fetchRaceDetail(raceId);
+    const race = await fetchDetailSem(() => fetchRaceDetail(raceId));
     completed++;
     setStatus(`<div class="spinner"></div> 出走表取得中 (${completed}/${limited.length})...`);
     if (race.horses.length > 0) {
@@ -1133,7 +1157,7 @@ async function fetchAndParse(dateStr) {
     dbg(`Retrying ${failedIds.length} failed races after 2s pause`);
     await sleep(2000);
     await Promise.all(failedIds.map(async (raceId) => {
-      const race = await fetchRaceDetail(raceId);
+      const race = await fetchDetailSem(() => fetchRaceDetail(raceId));
       if (race.horses.length > 0) races.push(race);
     }));
     if (races.length > 0) renderResults(groupByVenue(races));
