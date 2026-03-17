@@ -546,7 +546,7 @@ function getWeekendDates(offset) {
   const now = new Date();
   const day = now.getDay();
   // Find upcoming Saturday
-  const diffToSat = (6 - day + 7) % 7 || 7;
+  const diffToSat = day === 0 ? -1 : (6 - day + 7) % 7; // Sun→yesterday's Sat; Sat→today
   const sat = new Date(now);
   sat.setDate(now.getDate() + diffToSat + offset * 7);
   const sun = new Date(sat);
@@ -730,35 +730,31 @@ async function fetchRaceList(dateStr) {
     dbg(`kaisai.json failed: ${e.message}`);
   }
 
-  // ── Fallback: scrape race list page ────────────────────────────
+  // ── Fallback: scrape SP race list page via proxy ──────────────────
+  // race.netkeiba.com/top/race_list.html is a JS SPA → always returns 0 IDs without a browser.
+  // race.sp.netkeiba.com is server-rendered → race IDs are in the HTML.
   const year = dateStr.slice(0, 4);
-  const listUrls = [
-    `https://race.sp.netkeiba.com/?pid=race_list&kaisai_date=${dateStr}`,
-    `https://race.netkeiba.com/top/race_list.html?kaisai_date=${dateStr}`,
-  ];
-  let lastErr;
-  for (const url of listUrls) {
-    try {
-      const html = await fetchHtml(url);
-      const seen = new Set(extractRaceIds(html, year));
-      const doc = new DOMParser().parseFromString(html, 'text/html');
-      doc.querySelectorAll('a[href*="race_id"]').forEach(a => {
-        const m = (a.getAttribute('href') || '').match(/race_id=(\d{12})/);
-        if (m) seen.add(m[1]);
-      });
-      doc.querySelectorAll('[data-race-id]').forEach(el => {
-        const rid = el.getAttribute('data-race-id');
-        if (rid && /^\d{12}$/.test(rid)) seen.add(rid);
-      });
-      const ids = [...seen].sort();
-      dbg(`Race list from ${url.slice(8,40)}: ${ids.length} IDs`);
-      if (ids.length > 0) return ids.map(raceId => ({ raceId }));
-    } catch(e) {
-      dbg(`Race list failed (${url.slice(8,40)}): ${e.message}`);
-      lastErr = e;
-    }
+  const spUrl = `https://race.sp.netkeiba.com/?pid=race_list&kaisai_date=${dateStr}`;
+  try {
+    const html = await fetchHtml(spUrl);
+    const seen = new Set(extractRaceIds(html, year));
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    doc.querySelectorAll('a[href*="race_id"]').forEach(a => {
+      const m = (a.getAttribute('href') || '').match(/race_id=(\d{12})/);
+      if (m) seen.add(m[1]);
+    });
+    doc.querySelectorAll('[data-race-id]').forEach(el => {
+      const rid = el.getAttribute('data-race-id');
+      if (rid && /^\d{12}$/.test(rid)) seen.add(rid);
+    });
+    const ids = [...seen].sort();
+    dbg(`SP race list: ${ids.length} IDs`);
+    if (ids.length > 0) return ids.map(raceId => ({ raceId }));
+    dbg('SP race list: 0 IDs (この日は開催なしの可能性)');
+  } catch(e) {
+    dbg(`SP race list failed: ${e.message}`);
   }
-  throw lastErr || new Error('レース一覧の取得に失敗（ログを確認）');
+  throw new Error(`${dateStr}のレースデータが見つかりません。kaisai.jsonが未更新か開催なしの日付です。`);
 }
 
 async function fetchRaceDetail(raceId) {
